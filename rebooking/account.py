@@ -386,6 +386,12 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
     cap_path = Path(capture_dir) if capture_dir else None
     if cap_path:
         cap_path.mkdir(parents=True, exist_ok=True)
+        # Alte Mitschnitte entfernen, damit 'inspect' nie veraltete Daten zeigt.
+        for old in cap_path.glob("*.json"):
+            try:
+                old.unlink()
+            except OSError:
+                pass
 
     with sync_playwright() as p:
         browser = None
