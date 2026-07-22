@@ -154,33 +154,47 @@ def _redact(obj: Any, depth: int = 0, max_depth: int = 8) -> Any:
     return obj  # Zahlen, bool, None behalten
 
 
-def inspect_capture(capture_dir: str | Path, max_chars: int = 6000) -> str:
-    """Gibt eine geschwärzte Struktur-Übersicht der Mitschnitte zurück (Feldnamen)."""
+def inspect_capture(capture_dir: str | Path, max_chars: int = 3500) -> str:
+    """Geschwärzte Struktur-Übersicht: nur Buchungs-Knoten, nach Form dedupliziert."""
     cap = Path(capture_dir)
     files = sorted(cap.glob("*.json")) if cap.exists() else []
     if not files:
         return f"Keine Mitschnitte in {cap}. Erst 'account import --cdp --capture' ausführen."
 
-    out: list[str] = []
+    shapes: dict[tuple, list] = {}  # key-tuple -> [redacted_example, count]
+    skipped = 0
     for f in files:
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001
-            out.append(f"### {f.name}: nicht lesbar ({exc})")
+        except Exception:  # noqa: BLE001
             continue
-        # Auf trip-ähnliche Knoten fokussieren (mit Datum-Deszendent), sonst ganzes Objekt.
         nodes = _trip_like_nodes(data)
-        if nodes:
-            red = _redact(nodes[:5])
-            head = f"### {f.name}  ({len(nodes)} datums-tragende Knoten)"
-        else:
-            red = _redact(data)
-            head = f"### {f.name}  (kein Datum gefunden – ganze Struktur)"
-        blob = json.dumps(red, indent=2, ensure_ascii=False)
+        if not nodes:
+            skipped += 1
+            continue
+        for n in nodes:
+            key = tuple(sorted(n.keys()))
+            if key not in shapes:
+                shapes[key] = [_redact(n), 0]
+            shapes[key][1] += 1
+
+    if not shapes:
+        return (
+            f"{len(files)} Dateien geprüft, keine datums-tragenden Knoten gefunden.\n"
+            "Falls die Buchungen im Browser sichtbar sind, sag mir Bescheid – dann "
+            "erweitere ich die Suche."
+        )
+
+    out: list[str] = [f"{len(files)} Dateien · {skipped} ohne Buchungsdaten · {len(shapes)} Knoten-Formen:"]
+    # Nach Feldanzahl absteigend – die reichhaltigsten (echte Buchungen) zuerst.
+    for i, (key, (example, cnt)) in enumerate(
+        sorted(shapes.items(), key=lambda kv: len(kv[0]), reverse=True)[:8], 1
+    ):
+        blob = json.dumps(example, indent=2, ensure_ascii=False)
         if len(blob) > max_chars:
             blob = blob[:max_chars] + "\n…(gekürzt)"
-        out.append(head + "\n" + blob)
-    return "\n\n".join(out)
+        out.append(f"\n### Form {i} — {cnt}× — Felder: {list(key)}\n{blob}")
+    return "\n".join(out)
 
 
 def _has_date_descendant(node: Any, depth: int = 0) -> bool:
@@ -203,9 +217,9 @@ def _trip_like_nodes(data: Any) -> list[dict]:
             continue
         # Direktes Datum in einem Feld dieses Dicts (nicht zu tief) -> Kandidat.
         if any(_has_date_descendant(v, 3) for v in node.values()):
-            # schlanke Knoten mit etwas Inhalt (nicht die Riesen-Wurzel, nicht der
+            # Knoten mit etwas Inhalt (nicht die Riesen-Wurzel, nicht der
             # reine {isoDate:…}-Wrapper)
-            if 3 <= len(node) <= 40:
+            if 3 <= len(node) <= 60:
                 hits.append(node)
     return hits
 
@@ -485,12 +499,15 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
         if auth:
             print(f"  Login-Status: {auth}")
         low = (final_url + " " + final_title).lower()
-        if (auth and "anon" in auth.lower()) or any(w in low for w in ("sign in", "log in", "anmelden", "login")):
+        on_login_page = any(w in low for w in ("sign in", "log in", "anmelden", "/login"))
+        if on_login_page:
             print(
-                "  ⚠ Session ist NICHT eingeloggt. Der 'chrome'-Befehl nutzt ein separates,\n"
-                "    leeres Profil (data/chrome_profile) – dein normaler Chrome-Login zählt dort\n"
-                "    nicht. Bitte im geöffneten Debug-Chrome-Fenster bei Hotels.com einloggen und\n"
-                "    den Import erneut ausführen."
+                "  ⚠ Es wurde eine Login-Seite geladen. Bitte im Debug-Chrome-Fenster einloggen."
+            )
+        elif auth and "anon" in auth.lower():
+            print(
+                "  ℹ Analytics meldet ANONYMOUS – meist unkritisch, weil die Detailseiten über die\n"
+                "    Trip-ID erreichbar sind. Wenn Buchungen erkannt werden, ist alles gut."
             )
 
     bookings: list[dict] = []
