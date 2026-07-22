@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -66,7 +66,7 @@ def _coerce_date(value: Any) -> str | None:
                 return None
         if "epochseconds" in low:
             try:
-                return datetime.utcfromtimestamp(int(low["epochseconds"])).date().isoformat()
+                return datetime.fromtimestamp(int(low["epochseconds"]), tz=timezone.utc).date().isoformat()
             except (ValueError, TypeError, OSError):
                 return None
         return None
@@ -74,7 +74,7 @@ def _coerce_date(value: Any) -> str | None:
         # Vermutlich Epoch (Sekunden oder Millisekunden).
         secs = value / 1000 if value > 10_000_000_000 else value
         try:
-            return datetime.utcfromtimestamp(secs).date().isoformat()
+            return datetime.fromtimestamp(secs, tz=timezone.utc).date().isoformat()
         except (ValueError, OSError):
             return None
     if isinstance(value, str):
