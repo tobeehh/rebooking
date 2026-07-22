@@ -227,8 +227,10 @@ def cmd_chrome(args: argparse.Namespace) -> int:
         "https://www.hotels.com/trips",
     ]
     print("Starte deinen Chrome mit Debug-Port …")
-    print("  " + " ".join(cmd))
-    subprocess.Popen(cmd)
+    # Chromes Konsolen-Spam in eine Logdatei umleiten und Prozess abkoppeln,
+    # damit dieses Terminal sauber und nutzbar bleibt.
+    chrome_log = open(Path(config.data_dir) / "chrome.log", "ab")
+    subprocess.Popen(cmd, stdout=chrome_log, stderr=chrome_log, start_new_session=True)
 
     # Warten und prüfen, ob der Debug-Port wirklich offen ist.
     print("\nPrüfe, ob der Debug-Port geöffnet wurde …", end="", flush=True)
