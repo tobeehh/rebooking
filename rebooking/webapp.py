@@ -46,7 +46,6 @@ BASE = """
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title }} · Rebooking</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
     :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --muted:#94a3b8;
             --accent:#38bdf8; --good:#34d399; --bad:#f87171; --border:#334155; }
@@ -113,7 +112,7 @@ INDEX = """
 {% if rows %}
 <div class="card">
   <table>
-    <tr><th>Hotel</th><th>Zeitraum</th><th>Bezahlt</th><th>Aktuell</th><th>Differenz</th><th></th></tr>
+    <tr><th>Hotel</th><th>Zeitraum</th><th>Bezahlt</th><th>Aktuell</th><th>Differenz</th><th>Verlauf</th><th></th></tr>
     {% for r in rows %}
     <tr>
       <td>{{ r.name }} {% if not r.active %}<span class="badge">vergangen</span>{% endif %}</td>
@@ -122,7 +121,8 @@ INDEX = """
       <td>{{ r.current }}</td>
       <td class="{{ 'good' if r.diff_val and r.diff_val > 0 else ('bad' if r.diff_val and r.diff_val < 0 else 'muted') }}">
         {{ r.diff }}</td>
-      <td><a href="{{ url_for('booking_detail', booking_id=r.id) }}">Verlauf →</a></td>
+      <td>{{ r.spark|safe }}</td>
+      <td><a href="{{ url_for('booking_detail', booking_id=r.id) }}">Details →</a></td>
     </tr>
     {% endfor %}
   </table>
@@ -135,26 +135,11 @@ INDEX = """
 DETAIL = """
 <div class="card">
   <h2 style="margin-top:0;">{{ name }}</h2>
-  <p class="muted">{{ checkin }} → {{ checkout }} · bezahlt {{ paid }}</p>
-  <canvas id="chart"></canvas>
+  <p class="muted">{{ checkin }} → {{ checkout }} · bezahlt {{ paid }}
+     {% if lowest %}· niedrigster gesehener Preis: <span class="good">{{ lowest }}</span>{% endif %}</p>
+  {{ chart_svg|safe }}
 </div>
 <a class="btn secondary" href="{{ url_for('index') }}">← Zurück</a>
-<script>
-const labels = {{ labels|tojson }};
-const prices = {{ prices|tojson }};
-const paid = {{ paid_val }};
-new Chart(document.getElementById('chart'), {
-  type: 'line',
-  data: { labels, datasets: [
-    { label:'Preis', data:prices, borderColor:'#38bdf8', backgroundColor:'rgba(56,189,248,.15)',
-      tension:.25, spanGaps:true, fill:true },
-    { label:'Bezahlt', data:labels.map(()=>paid), borderColor:'#f87171', borderDash:[6,6],
-      pointRadius:0, fill:false }
-  ]},
-  options: { plugins:{legend:{labels:{color:'#e2e8f0'}}},
-    scales:{ x:{ticks:{color:'#94a3b8'}}, y:{ticks:{color:'#94a3b8'}} } }
-});
-</script>
 """
 
 SETTINGS = """
@@ -230,6 +215,88 @@ def _fmt(value: float | None, currency: str) -> str:
     return f"{value:,.2f} {currency}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _scale(prices: list[float], paid: float, w: int, h: int, pad: tuple[int, int, int, int]):
+    """Hilfsfunktion: Preise auf SVG-Koordinaten abbilden."""
+    pt, pr, pb, pl = pad
+    vals = [p for p in prices if p is not None] + [paid]
+    lo, hi = min(vals), max(vals)
+    if hi == lo:
+        hi, lo = hi + 1, lo - 1
+    span = hi - lo
+    lo -= span * 0.08
+    hi += span * 0.08
+    n = len(prices)
+
+    def x(i: int) -> float:
+        return pl if n <= 1 else pl + i * (w - pl - pr) / (n - 1)
+
+    def y(v: float) -> float:
+        return pt + (hi - v) / (hi - lo) * (h - pt - pb)
+
+    return x, y, lo, hi
+
+
+def _svg_line_chart(labels: list[str], prices: list[float], paid: float) -> str:
+    """Serverseitig gerenderter Preisverlauf als SVG (keine externe Abhängigkeit)."""
+    if not prices:
+        return '<p class="muted">Noch keine Messpunkte. Nach dem ersten „Jetzt prüfen“ erscheint hier der Verlauf.</p>'
+    w, h = 960, 320
+    pad = (20, 20, 44, 56)  # top, right, bottom, left
+    x, y, lo, hi = _scale(prices, paid, w, h, pad)
+
+    pts = " ".join(f"{x(i):.1f},{y(p):.1f}" for i, p in enumerate(prices) if p is not None)
+    circles = "".join(
+        f'<circle cx="{x(i):.1f}" cy="{y(p):.1f}" r="3" fill="#38bdf8"/>'
+        for i, p in enumerate(prices) if p is not None
+    )
+    paid_y = y(paid)
+    # y-Achsenbeschriftung (3 Werte)
+    yticks = ""
+    for frac in (0.0, 0.5, 1.0):
+        val = hi - frac * (hi - lo)
+        yy = pad[0] + frac * (h - pad[0] - pad[2])
+        yticks += (
+            f'<line x1="{pad[3]}" y1="{yy:.1f}" x2="{w - pad[1]}" y2="{yy:.1f}" '
+            f'stroke="#334155" stroke-width="1"/>'
+            f'<text x="{pad[3] - 8:.0f}" y="{yy + 4:.1f}" fill="#94a3b8" font-size="11" '
+            f'text-anchor="end">{val:.0f}</text>'
+        )
+    # x-Achse: erstes und letztes Datum
+    xlabels = (
+        f'<text x="{pad[3]}" y="{h - 14}" fill="#94a3b8" font-size="11">{labels[0]}</text>'
+        f'<text x="{w - pad[1]}" y="{h - 14}" fill="#94a3b8" font-size="11" '
+        f'text-anchor="end">{labels[-1]}</text>'
+    ) if labels else ""
+
+    return f"""<svg viewBox="0 0 {w} {h}" width="100%" role="img" aria-label="Preisverlauf">
+  {yticks}
+  <line x1="{pad[3]}" y1="{paid_y:.1f}" x2="{w - pad[1]}" y2="{paid_y:.1f}"
+        stroke="#f87171" stroke-width="1.5" stroke-dasharray="6 6"/>
+  <text x="{w - pad[1]:.0f}" y="{paid_y - 6:.1f}" fill="#f87171" font-size="11"
+        text-anchor="end">bezahlt {paid:.0f}</text>
+  <polyline points="{pts}" fill="none" stroke="#38bdf8" stroke-width="2"/>
+  {circles}
+  {xlabels}
+</svg>"""
+
+
+def _svg_sparkline(prices: list[float], paid: float) -> str:
+    """Kleiner Verlaufs-Sparkline für die Übersichtstabelle."""
+    prices = [p for p in prices if p is not None]
+    if len(prices) < 2:
+        return ""
+    w, h = 120, 32
+    x, y, _, _ = _scale(prices, paid, w, h, (4, 4, 4, 4))
+    pts = " ".join(f"{x(i):.1f},{y(p):.1f}" for i, p in enumerate(prices))
+    last_col = "#34d399" if prices[-1] < paid else "#f87171"
+    return (
+        f'<svg viewBox="0 0 {w} {h}" width="{w}" height="{h}">'
+        f'<polyline points="{pts}" fill="none" stroke="{last_col}" stroke-width="1.5"/>'
+        f'<circle cx="{x(len(prices) - 1):.1f}" cy="{y(prices[-1]):.1f}" r="2.5" fill="{last_col}"/>'
+        f"</svg>"
+    )
+
+
 def create_app(config_path: str = "config.yaml") -> Flask:
     app = Flask(__name__)
     config_path = Path(config_path)
@@ -249,6 +316,7 @@ def create_app(config_path: str = "config.yaml") -> Flask:
         for b in config.bookings:
             last = history.last_price(b.id)
             diff_val = round(b.paid_price - last, 2) if last is not None else None
+            series = [e["price"] for e in history.history(b.id) if e.get("ok") and e.get("price") is not None]
             rows.append(
                 {
                     "id": b.id,
@@ -260,6 +328,7 @@ def create_app(config_path: str = "config.yaml") -> Flask:
                     "current": _fmt(last, b.currency),
                     "diff": _fmt(diff_val, b.currency) if diff_val is not None else "–",
                     "diff_val": diff_val,
+                    "spark": _svg_sparkline(series, b.paid_price),
                 }
             )
         return render(INDEX, "Übersicht", "index", rows=rows)
@@ -271,9 +340,10 @@ def create_app(config_path: str = "config.yaml") -> Flask:
         booking = next((b for b in config.bookings if b.id == booking_id), None)
         if booking is None:
             return redirect(url_for("index", msg="Buchung nicht gefunden"))
-        entries = [e for e in history.history(booking_id) if e.get("ok")]
+        entries = [e for e in history.history(booking_id) if e.get("ok") and e.get("price") is not None]
         labels = [e["checked_at"][:10] for e in entries]
         prices = [e["price"] for e in entries]
+        lowest = history.lowest_seen(booking_id)
         return render(
             DETAIL,
             booking.name,
@@ -282,9 +352,8 @@ def create_app(config_path: str = "config.yaml") -> Flask:
             checkin=booking.checkin.isoformat(),
             checkout=booking.checkout.isoformat(),
             paid=_fmt(booking.paid_price, booking.currency),
-            paid_val=booking.paid_price,
-            labels=labels,
-            prices=prices,
+            lowest=_fmt(lowest, booking.currency) if lowest is not None else "",
+            chart_svg=_svg_line_chart(labels, prices, booking.paid_price),
         )
 
     @app.route("/settings")
