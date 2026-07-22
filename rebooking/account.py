@@ -282,6 +282,47 @@ def _looks_interesting(url: str) -> bool:
     return "graphql" in url or "trips" in url or "itinerar" in url or "booking" in url
 
 
+_TRIPID_RE = re.compile(r"egti-[A-Za-z0-9]{2,4}-[A-Za-z0-9]{2,4}-[A-Za-z0-9]{2,6}")
+
+
+def _extract_trip_ids(captured: list[Any]) -> list[str]:
+    """Zieht tripIds (egti-…) aus den abgefangenen Antworten."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for body in captured:
+        # 1) gezielt über den Schlüssel tripId
+        for node in _walk(body):
+            if isinstance(node, dict):
+                low = _lower_keys(node)
+                tid = low.get("tripid")
+                if isinstance(tid, str) and tid and tid not in seen:
+                    seen.add(tid)
+                    ids.append(tid)
+        # 2) zusätzlich per Regex über den Rohtext
+        try:
+            for m in _TRIPID_RE.findall(json.dumps(body)):
+                if m not in seen:
+                    seen.add(m)
+                    ids.append(m)
+        except Exception:
+            pass
+    return ids
+
+
+def _auth_state(captured: list[Any]) -> str | None:
+    """Ermittelt grob den Login-Status aus den Antworten (ANONYMOUS/AUTHENTICATED)."""
+    for body in captured:
+        for node in _walk(body):
+            if isinstance(node, dict):
+                low = _lower_keys(node)
+                for k in ("usertype", "user_authentication_state", "userauthenticationstate"):
+                    if isinstance(low.get(k), str):
+                        return low[k]
+                if low.get("registered") is True:
+                    return "AUTHENTICATED"
+    return None
+
+
 def _goto_with_retry(page, url: str, attempts: int = 3) -> None:
     """Navigiert mit Wiederholungen (fängt transiente Protokoll-/Netzfehler ab)."""
     last_exc = None
@@ -399,6 +440,22 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
         except Exception:
             pass
 
+        # Die Buchungsdetails werden pro Trip separat geladen -> tripIds folgen.
+        trip_ids = _extract_trip_ids(captured)
+        if verbose and trip_ids:
+            print(f"  Gefundene Trip-IDs: {len(trip_ids)} – lade Detailseiten …")
+        for tid in trip_ids[:25]:
+            try:
+                _goto_with_retry(page, account.trip_detail_url_template.format(id=tid))
+                try:
+                    page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    pass
+                page.wait_for_timeout(2500)
+            except Exception:
+                continue
+
+        auth = _auth_state(captured)
         final_url = page.url
         final_title = ""
         try:
@@ -419,9 +476,16 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
         if final_title:
             print(f"  Titel: {final_title}")
         print(f"  Abgefangene JSON-Antworten: {len(captured)} · eingebettete JSON-Blobs: {len(embedded)}")
+        if auth:
+            print(f"  Login-Status: {auth}")
         low = (final_url + " " + final_title).lower()
-        if any(w in low for w in ("sign in", "log in", "anmelden", "login")):
-            print("  ⚠ Sieht nach Login-Seite aus – bist du im geöffneten Chrome eingeloggt?")
+        if (auth and "anon" in auth.lower()) or any(w in low for w in ("sign in", "log in", "anmelden", "login")):
+            print(
+                "  ⚠ Session ist NICHT eingeloggt. Der 'chrome'-Befehl nutzt ein separates,\n"
+                "    leeres Profil (data/chrome_profile) – dein normaler Chrome-Login zählt dort\n"
+                "    nicht. Bitte im geöffneten Debug-Chrome-Fenster bei Hotels.com einloggen und\n"
+                "    den Import erneut ausführen."
+            )
 
     bookings: list[dict] = []
     seen: set[tuple] = set()

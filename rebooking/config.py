@@ -64,6 +64,8 @@ class AccountConfig:
     # Seite mit der Reise-/Buchungsübersicht.
     trips_url: str = "https://www.hotels.com/trips"
     login_url: str = "https://www.hotels.com/login"
+    # Detailseite je Buchung; {id} wird durch die tripId ersetzt.
+    trip_detail_url_template: str = "https://www.hotels.com/trips/{id}"
     # Beim Import Login-Fenster sichtbar? (für den einmaligen Login nötig)
     headless: bool = True
     # Optionaler Pfad zu einer Chrome/Chromium-Binary (statt Download).
@@ -141,6 +143,7 @@ class Config:
             profile_dir=a.get("profile_dir", "data/browser_profile"),
             trips_url=a.get("trips_url", "https://www.hotels.com/trips"),
             login_url=a.get("login_url", "https://www.hotels.com/login"),
+            trip_detail_url_template=a.get("trip_detail_url_template", "https://www.hotels.com/trips/{id}"),
             headless=bool(a.get("headless", True)),
             executable_path=a.get("executable_path", "") or "",
             cdp_url=a.get("cdp_url", "") or "",
