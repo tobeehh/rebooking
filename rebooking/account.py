@@ -172,8 +172,11 @@ _BOOKING_KEY_HINTS = (
 _NOISE_KEY_HINTS = ("tc_vars", "point_of_sale", "clickstream", "identifiers_session_id")
 
 
+_MONEY_RE = re.compile(r"[€$£]|\bEUR\b|\bUSD\b|\bGBP\b")
+
+
 def _booking_like_nodes(data: Any) -> list[dict]:
-    """Findet Knoten, deren Feldnamen auf eine Buchung hindeuten (Datum egal)."""
+    """Findet Knoten, die auf eine Buchung hindeuten (per Feldname oder Text-Inhalt)."""
     hits: list[dict] = []
     for node in _walk(data):
         if not isinstance(node, dict):
@@ -181,9 +184,13 @@ def _booking_like_nodes(data: Any) -> list[dict]:
         keys_join = " ".join(node.keys()).lower()
         if any(n in keys_join for n in _NOISE_KEY_HINTS):
             continue
-        if any(h in keys_join for h in _BOOKING_KEY_HINTS):
-            if 2 <= len(node) <= 80:
-                hits.append(node)
+        if any(h in keys_join for h in _BOOKING_KEY_HINTS) and 2 <= len(node) <= 80:
+            hits.append(node)
+            continue
+        # EGDS-Textbausteine mit Datum oder Geldbetrag (dort stehen oft Datum/Preis).
+        t = node.get("text")
+        if isinstance(t, str) and len(node) <= 12 and (_MONEY_RE.search(t) or _DATEISH_RE.search(t)):
+            hits.append(node)
     return hits
 
 
@@ -361,6 +368,20 @@ def _extract_trip_ids(captured: list[Any]) -> list[str]:
     return ids
 
 
+def _extract_detail_urls(captured: list[Any]) -> list[str]:
+    """Findet die Buchungs-Detail-Links (cardAction.resource.value, .../details/…)."""
+    urls: list[str] = []
+    seen: set[str] = set()
+    for body in captured:
+        for node in _walk(body):
+            if isinstance(node, dict) and node.get("__typename") == "HttpURI":
+                v = node.get("value")
+                if isinstance(v, str) and "/details/" in v and v not in seen:
+                    seen.add(v)
+                    urls.append(v)
+    return urls
+
+
 def _auth_state(captured: list[Any]) -> str | None:
     """Ermittelt grob den Login-Status aus den Antworten (ANONYMOUS/AUTHENTICATED)."""
     for body in captured:
@@ -505,6 +526,21 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
         for tid in trip_ids[:25]:
             try:
                 _goto_with_retry(page, account.trip_detail_url_template.format(id=tid))
+                try:
+                    page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    pass
+                page.wait_for_timeout(2500)
+            except Exception:
+                continue
+
+        # Den Buchungs-Detailseiten folgen – dort stehen Datum und Preis.
+        detail_urls = _extract_detail_urls(captured)
+        if verbose and detail_urls:
+            print(f"  Detail-Links: {len(detail_urls)} – lade Buchungsdetails …")
+        for u in detail_urls[:30]:
+            try:
+                _goto_with_retry(page, u)
                 try:
                     page.wait_for_load_state("networkidle", timeout=20000)
                 except Exception:
