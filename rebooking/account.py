@@ -36,6 +36,12 @@ _CHECKOUT_KEYS = ("checkout", "checkoutdate", "enddate", "departuredate", "todat
 _URL_KEYS = ("url", "propertyurl", "detailsurl", "infositeurl", "link", "href")
 _PRICE_KEYS = ("total", "totalprice", "amount", "grandtotal", "price")
 _DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+# Erkennt Datums-artige Strings in vielen Formaten (nur zum Anzeigen in inspect).
+_DATEISH_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}|\d{1,2}[./]\d{1,2}[./]\d{2,4}|(19|20)\d{2}"
+    r"|jan|feb|mar|mär|apr|may|mai|jun|jul|aug|sep|oct|okt|nov|dec|dez",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +152,7 @@ def _redact(obj: Any, depth: int = 0, max_depth: int = 8) -> Any:
             red.append(f"…(+{len(obj) - 3} weitere)")
         return red
     if isinstance(obj, str):
-        if _DATE_RE.search(obj):
+        if len(obj) <= 30 and _DATEISH_RE.search(obj):
             return obj  # Datum ist nicht sensibel und hilft beim Mapping
         if len(obj) <= 18 and " " not in obj:
             return obj  # kurze Enums/Codes/Währungen behalten
@@ -154,41 +160,70 @@ def _redact(obj: Any, depth: int = 0, max_depth: int = 8) -> Any:
     return obj  # Zahlen, bool, None behalten
 
 
-def inspect_capture(capture_dir: str | Path, max_chars: int = 3500) -> str:
-    """Geschwärzte Struktur-Übersicht: nur Buchungs-Knoten, nach Form dedupliziert."""
+# Feldnamen-Hinweise, die auf eine echte Buchung deuten (unabhängig vom Datum).
+_BOOKING_KEY_HINTS = (
+    "propertyname", "hotelname", "property_name", "checkin", "check_in", "checkindate",
+    "checkout", "check_out", "checkoutdate", "reservation", "confirmation", "roomtype",
+    "numberofnights", "nights", "propertyid", "staydate", "arrival", "departure",
+    "leadprice", "totalprice", "pricedetails", "itinerary",
+)
+
+# Reine Tracking-/Analytics-Knoten, die wir NICHT sehen wollen.
+_NOISE_KEY_HINTS = ("tc_vars", "point_of_sale", "clickstream", "identifiers_session_id")
+
+
+def _booking_like_nodes(data: Any) -> list[dict]:
+    """Findet Knoten, deren Feldnamen auf eine Buchung hindeuten (Datum egal)."""
+    hits: list[dict] = []
+    for node in _walk(data):
+        if not isinstance(node, dict):
+            continue
+        keys_join = " ".join(node.keys()).lower()
+        if any(n in keys_join for n in _NOISE_KEY_HINTS):
+            continue
+        if any(h in keys_join for h in _BOOKING_KEY_HINTS):
+            if 2 <= len(node) <= 80:
+                hits.append(node)
+    return hits
+
+
+def inspect_capture(capture_dir: str | Path, max_chars: int = 3000) -> str:
+    """Geschwärzte Struktur-Übersicht: Buchungs-Knoten (per Feldname), dedupliziert."""
     cap = Path(capture_dir)
     files = sorted(cap.glob("*.json")) if cap.exists() else []
     if not files:
         return f"Keine Mitschnitte in {cap}. Erst 'account import --cdp --capture' ausführen."
 
     shapes: dict[tuple, list] = {}  # key-tuple -> [redacted_example, count]
-    skipped = 0
+    url_list: list[str] = []
     for f in files:
+        # Dateiname kodiert die URL – hilft zu sehen, welche Endpunkte Daten liefern.
+        url_list.append(f.name)
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue
-        nodes = _trip_like_nodes(data)
-        if not nodes:
-            skipped += 1
-            continue
-        for n in nodes:
+        for n in _booking_like_nodes(data):
             key = tuple(sorted(n.keys()))
             if key not in shapes:
                 shapes[key] = [_redact(n), 0]
             shapes[key][1] += 1
 
-    if not shapes:
-        return (
-            f"{len(files)} Dateien geprüft, keine datums-tragenden Knoten gefunden.\n"
-            "Falls die Buchungen im Browser sichtbar sind, sag mir Bescheid – dann "
-            "erweitere ich die Suche."
-        )
+    out: list[str] = [f"{len(files)} Mitschnitte. Endpunkte:"]
+    out += [f"  - {u}" for u in url_list[:40]]
 
-    out: list[str] = [f"{len(files)} Dateien · {skipped} ohne Buchungsdaten · {len(shapes)} Knoten-Formen:"]
-    # Nach Feldanzahl absteigend – die reichhaltigsten (echte Buchungen) zuerst.
+    if not shapes:
+        out.append(
+            "\nKeine Knoten mit Buchungs-Feldnamen gefunden. Die Reservierungsdaten "
+            "liegen evtl. in einem anderen Endpunkt oder als HTML vor.\n"
+            "Bitte schick mir zusätzlich die obige Endpunkt-Liste – daran erkenne ich, "
+            "welche Antwort die Buchung enthält."
+        )
+        return "\n".join(out)
+
+    out.append(f"\n{len(shapes)} Knoten-Formen mit Buchungs-Feldern:")
     for i, (key, (example, cnt)) in enumerate(
-        sorted(shapes.items(), key=lambda kv: len(kv[0]), reverse=True)[:8], 1
+        sorted(shapes.items(), key=lambda kv: len(kv[0]), reverse=True)[:10], 1
     ):
         blob = json.dumps(example, indent=2, ensure_ascii=False)
         if len(blob) > max_chars:
