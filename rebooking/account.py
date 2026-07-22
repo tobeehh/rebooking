@@ -134,6 +134,82 @@ def _walk(node: Any) -> Iterable[dict]:
             yield from _walk(v)
 
 
+def _redact(obj: Any, depth: int = 0, max_depth: int = 8) -> Any:
+    """Schwärzt freie Texte (Namen/Adressen), behält Struktur, Datum, Zahlen, Enums."""
+    if depth > max_depth:
+        return "…"
+    if isinstance(obj, dict):
+        return {k: _redact(v, depth + 1, max_depth) for k, v in obj.items()}
+    if isinstance(obj, list):
+        red = [_redact(v, depth + 1, max_depth) for v in obj[:3]]
+        if len(obj) > 3:
+            red.append(f"…(+{len(obj) - 3} weitere)")
+        return red
+    if isinstance(obj, str):
+        if _DATE_RE.search(obj):
+            return obj  # Datum ist nicht sensibel und hilft beim Mapping
+        if len(obj) <= 18 and " " not in obj:
+            return obj  # kurze Enums/Codes/Währungen behalten
+        return f"<text len={len(obj)}>"
+    return obj  # Zahlen, bool, None behalten
+
+
+def inspect_capture(capture_dir: str | Path, max_chars: int = 6000) -> str:
+    """Gibt eine geschwärzte Struktur-Übersicht der Mitschnitte zurück (Feldnamen)."""
+    cap = Path(capture_dir)
+    files = sorted(cap.glob("*.json")) if cap.exists() else []
+    if not files:
+        return f"Keine Mitschnitte in {cap}. Erst 'account import --cdp --capture' ausführen."
+
+    out: list[str] = []
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            out.append(f"### {f.name}: nicht lesbar ({exc})")
+            continue
+        # Auf trip-ähnliche Knoten fokussieren (mit Datum-Deszendent), sonst ganzes Objekt.
+        nodes = _trip_like_nodes(data)
+        if nodes:
+            red = _redact(nodes[:5])
+            head = f"### {f.name}  ({len(nodes)} datums-tragende Knoten)"
+        else:
+            red = _redact(data)
+            head = f"### {f.name}  (kein Datum gefunden – ganze Struktur)"
+        blob = json.dumps(red, indent=2, ensure_ascii=False)
+        if len(blob) > max_chars:
+            blob = blob[:max_chars] + "\n…(gekürzt)"
+        out.append(head + "\n" + blob)
+    return "\n\n".join(out)
+
+
+def _has_date_descendant(node: Any, depth: int = 0) -> bool:
+    if depth > 4:
+        return False
+    if isinstance(node, str):
+        return bool(_DATE_RE.search(node))
+    if isinstance(node, dict):
+        return any(_has_date_descendant(v, depth + 1) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_date_descendant(v, depth + 1) for v in node[:20])
+    return False
+
+
+def _trip_like_nodes(data: Any) -> list[dict]:
+    """Findet die kleinsten Dicts, die ein Datum enthalten (Buchungskandidaten)."""
+    hits: list[dict] = []
+    for node in _walk(data):
+        if not isinstance(node, dict):
+            continue
+        # Direktes Datum in einem Feld dieses Dicts (nicht zu tief) -> Kandidat.
+        if any(_has_date_descendant(v, 3) for v in node.values()):
+            # schlanke Knoten mit etwas Inhalt (nicht die Riesen-Wurzel, nicht der
+            # reine {isoDate:…}-Wrapper)
+            if 3 <= len(node) <= 40:
+                hits.append(node)
+    return hits
+
+
 def parse_trips(data: Any) -> list[dict]:
     """Extrahiert Buchungen aus einer (unbekannt strukturierten) JSON-Antwort.
 

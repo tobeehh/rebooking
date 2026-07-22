@@ -83,7 +83,7 @@ def cmd_account(args: argparse.Namespace) -> int:
 
     import yaml
 
-    from rebooking.account import fetch_account_bookings, login
+    from rebooking.account import fetch_account_bookings, inspect_capture, login
 
     config = Config.load(args.config)
     if getattr(args, "headed", False):
@@ -93,6 +93,10 @@ def cmd_account(args: argparse.Namespace) -> int:
 
     if args.action == "login":
         login(config.account)
+        return 0
+
+    if args.action == "inspect":
+        print(inspect_capture(Path(config.data_dir) / "capture"))
         return 0
 
     # action == "import"
@@ -295,8 +299,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.set_defaults(func=cmd_list)
 
     p_acc = sub.add_parser("account", help="Buchungen aus dem Hotels.com-Konto importieren")
-    p_acc.add_argument("action", choices=["login", "import"],
-                       help="login: einmaliger Browser-Login | import: Buchungen einlesen")
+    p_acc.add_argument("action", choices=["login", "import", "inspect"],
+                       help="login: Browser-Login | import: Buchungen einlesen | inspect: Mitschnitt-Struktur zeigen")
     p_acc.add_argument("--capture", action="store_true", help="Rohantworten zum Justieren speichern")
     p_acc.add_argument("--merge", action="store_true", help="gefundene Buchungen in config.yaml übernehmen")
     p_acc.add_argument("--headed", action="store_true", help="Import im sichtbaren Browser (robuster gegen Bot-Schutz)")
