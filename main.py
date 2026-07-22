@@ -83,7 +83,7 @@ def cmd_account(args: argparse.Namespace) -> int:
 
     import yaml
 
-    from rebooking.account import fetch_account_bookings, inspect_capture, login
+    from rebooking.account import fetch_account_bookings, inspect_capture, inspect_detail, login
 
     config = Config.load(args.config)
     if getattr(args, "headed", False):
@@ -96,7 +96,11 @@ def cmd_account(args: argparse.Namespace) -> int:
         return 0
 
     if args.action == "inspect":
-        print(inspect_capture(Path(config.data_dir) / "capture", raw=getattr(args, "raw", False)))
+        cap_dir = Path(config.data_dir) / "capture"
+        if getattr(args, "detail", False):
+            print(inspect_detail(cap_dir, raw=getattr(args, "raw", False)))
+        else:
+            print(inspect_capture(cap_dir, raw=getattr(args, "raw", False)))
         return 0
 
     # action == "import"
@@ -305,6 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_acc.add_argument("--merge", action="store_true", help="gefundene Buchungen in config.yaml übernehmen")
     p_acc.add_argument("--headed", action="store_true", help="Import im sichtbaren Browser (robuster gegen Bot-Schutz)")
     p_acc.add_argument("--raw", action="store_true", help="bei inspect: echte Werte zeigen (ungeschwärzt)")
+    p_acc.add_argument("--detail", action="store_true", help="bei inspect: volle Preis-Detail-Antwort zeigen")
     p_acc.add_argument("--cdp", action="store_true", help="an laufenden Chrome (python main.py chrome) anbinden")
     p_acc.add_argument("--cdp-port", type=int, default=9222, help="Debug-Port des Chrome (Standard 9222)")
     p_acc.set_defaults(func=cmd_account)

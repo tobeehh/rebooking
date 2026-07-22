@@ -197,6 +197,33 @@ def _booking_like_nodes(data: Any) -> list[dict]:
     return hits
 
 
+def inspect_detail(capture_dir: str | Path, raw: bool = False, max_chars: int = 11000) -> str:
+    """Zeigt die vollständige(n) Detail-Antwort(en) mit dem Preis (Kontext für Mapping)."""
+    cap = Path(capture_dir)
+    files = sorted(cap.glob("*.json")) if cap.exists() else []
+    out: list[str] = []
+    shown = 0
+    for f in files:
+        txt = f.read_text(encoding="utf-8")
+        if "pricingSummaries" not in txt and "Total price" not in txt:
+            continue
+        try:
+            data = json.loads(txt)
+        except Exception:  # noqa: BLE001
+            continue
+        red = data if raw else _redact(data)
+        blob = json.dumps(red, indent=2, ensure_ascii=False)
+        if len(blob) > max_chars:
+            blob = blob[:max_chars] + "\n…(gekürzt)"
+        out.append(f"### {f.name}\n{blob}")
+        shown += 1
+        if shown >= 2:
+            break
+    if not out:
+        return "Keine Datei mit 'pricingSummaries'/'Total price' gefunden."
+    return "\n\n".join(out)
+
+
 def inspect_capture(capture_dir: str | Path, max_chars: int = 3000, raw: bool = False) -> str:
     """Struktur-Übersicht der Buchungs-Knoten (per Feldname), dedupliziert.
 
