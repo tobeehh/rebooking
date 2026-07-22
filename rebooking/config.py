@@ -51,12 +51,26 @@ class ScraperConfig:
 
 
 @dataclass
+class AccountConfig:
+    """Automatischer Import der Buchungen aus dem Hotels.com-Konto."""
+
+    # Persistentes Browser-Profil (Cookies/Session nach einmaligem Login).
+    profile_dir: str = "data/browser_profile"
+    # Seite mit der Reise-/Buchungsübersicht.
+    trips_url: str = "https://www.hotels.com/trips"
+    login_url: str = "https://www.hotels.com/login"
+    # Beim Import Login-Fenster sichtbar? (für den einmaligen Login nötig)
+    headless: bool = True
+
+
+@dataclass
 class Config:
     currency: str
     notifications: NotificationConfig
     scraper: ScraperConfig
     bookings: list[Booking]
     data_dir: Path
+    account: AccountConfig = field(default_factory=AccountConfig)
 
     @classmethod
     def load(cls, path: str | Path) -> "Config":
@@ -111,10 +125,19 @@ class Config:
 
         data_dir = Path(raw.get("data_dir", "data"))
 
+        a = raw.get("account", {}) or {}
+        account = AccountConfig(
+            profile_dir=a.get("profile_dir", "data/browser_profile"),
+            trips_url=a.get("trips_url", "https://www.hotels.com/trips"),
+            login_url=a.get("login_url", "https://www.hotels.com/login"),
+            headless=bool(a.get("headless", True)),
+        )
+
         return cls(
             currency=currency,
             notifications=notifications,
             scraper=scraper,
             bookings=bookings,
             data_dir=data_dir,
+            account=account,
         )

@@ -77,6 +77,76 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_account(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    import yaml
+
+    from rebooking.account import fetch_account_bookings, login
+
+    config = Config.load(args.config)
+
+    if args.action == "login":
+        login(config.account)
+        return 0
+
+    # action == "import"
+    capture = str(Path(config.data_dir) / "capture") if args.capture else None
+    print("Lese Buchungen aus deinem Hotels.com-Konto ...")
+    found = fetch_account_bookings(config.account, capture_dir=capture)
+
+    if not found:
+        print(
+            "Keine Buchungen erkannt.\n"
+            "Tipp: Mit '--capture' erneut ausführen; die Rohantworten liegen dann in "
+            f"{config.data_dir}/capture/ – damit lässt sich das Feld-Mapping justieren."
+        )
+        return 1
+
+    print(f"\n{len(found)} Buchung(en) gefunden:\n")
+    for b in found:
+        price = b.get("paid_price")
+        print(f"• {b['name']}  {b['checkin']} → {b['checkout']}  "
+              f"{'Preis '+str(price)+' '+b.get('currency','') if price else '(Preis unbekannt)'}")
+
+    if not args.merge:
+        print("\n(Nur Anzeige. Mit '--merge' in config.yaml übernehmen.)")
+        return 0
+
+    cfg_path = Path(args.config)
+    raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+    raw = raw or {}
+    existing = raw.setdefault("bookings", [])
+    have = {(e.get("name"), str(e.get("checkin")), str(e.get("checkout"))) for e in existing}
+
+    added = 0
+    for b in found:
+        key = (b["name"], b["checkin"], b["checkout"])
+        if key in have:
+            continue
+        entry = {
+            "name": b["name"],
+            "url": b["url"],
+            "checkin": b["checkin"],
+            "checkout": b["checkout"],
+            "adults": 2,
+            "children": 0,
+            "rooms": 1,
+            "paid_price": b.get("paid_price") or 0,
+            "currency": b.get("currency", "EUR"),
+            "notes": "importiert – bitte Preis/Belegung prüfen",
+        }
+        existing.append(entry)
+        have.add(key)
+        added += 1
+
+    cfg_path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    print(f"\n{added} neue Buchung(en) in {cfg_path} übernommen.")
+    if any(not b.get("paid_price") for b in found):
+        print("Achtung: Bei einigen fehlt der Preis – bitte in der Web-UI ergänzen.")
+    return 0
+
+
 def cmd_web(args: argparse.Namespace) -> int:
     from rebooking.webapp import create_app
 
@@ -98,6 +168,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_list = sub.add_parser("list", help="konfigurierte Buchungen anzeigen")
     p_list.set_defaults(func=cmd_list)
+
+    p_acc = sub.add_parser("account", help="Buchungen aus dem Hotels.com-Konto importieren")
+    p_acc.add_argument("action", choices=["login", "import"],
+                       help="login: einmaliger Browser-Login | import: Buchungen einlesen")
+    p_acc.add_argument("--capture", action="store_true", help="Rohantworten zum Justieren speichern")
+    p_acc.add_argument("--merge", action="store_true", help="gefundene Buchungen in config.yaml übernehmen")
+    p_acc.set_defaults(func=cmd_account)
 
     p_web = sub.add_parser("web", help="Web-UI starten")
     p_web.add_argument("--host", default="127.0.0.1")

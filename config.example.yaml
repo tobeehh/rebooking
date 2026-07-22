@@ -29,6 +29,15 @@ notifications:
     bot_token: ${TELEGRAM_BOT_TOKEN}
     chat_id: ${TELEGRAM_CHAT_ID}
 
+# Automatischer Import der Buchungen aus deinem Hotels.com-Konto (optional).
+# Ablauf:  python main.py account login   (einmalig, Browser öffnet sich)
+#          python main.py account import --merge
+account:
+  profile_dir: data/browser_profile      # gespeicherte Login-Session
+  trips_url: "https://www.hotels.com/trips"
+  login_url: "https://www.hotels.com/login"
+  headless: true                          # beim Import; Login ist immer sichtbar
+
 scraper:
   headless: true
   timeout_ms: 60000

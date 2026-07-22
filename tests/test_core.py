@@ -159,6 +159,78 @@ def test_build_message():
 
 # --- storage --------------------------------------------------------------
 
+# --- account / trips parser ----------------------------------------------
+
+from rebooking.account import _coerce_date, parse_trips
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("2026-09-15", "2026-09-15"),
+        ("2026-09-15T14:00:00Z", "2026-09-15"),
+        ({"isoDate": "2026-09-15"}, "2026-09-15"),
+        ({"year": 2026, "month": 9, "day": 15}, "2026-09-15"),
+        ({"epochSeconds": 1789000000}, "2026-09-10"),
+        (None, None),
+        ("kein datum", None),
+    ],
+)
+def test_coerce_date(value, expected):
+    assert _coerce_date(value) == expected
+
+
+def test_parse_trips_nested_graphql_like():
+    # Nachgebildete, verschachtelte Antwort wie sie eine GraphQL-API liefern könnte.
+    data = {
+        "data": {
+            "trips": {
+                "items": [
+                    {
+                        "propertyName": "Hotel Adlon Berlin",
+                        "detailsUrl": "/ho123456/",
+                        "checkInDate": {"isoDate": "2026-09-15"},
+                        "checkOutDate": {"isoDate": "2026-09-18"},
+                        "price": {"total": {"amount": 540.0, "currency": "EUR"}},
+                    },
+                    {
+                        "propertyName": "Strandhotel Sylt",
+                        "propertyUrl": "https://www.hotels.com/ho999/",
+                        "startDate": "2026-10-01",
+                        "endDate": "2026-10-04",
+                        "grandTotal": {"amount": 820, "currency": "EUR"},
+                    },
+                ]
+            }
+        }
+    }
+    trips = parse_trips(data)
+    names = {t["name"] for t in trips}
+    assert names == {"Hotel Adlon Berlin", "Strandhotel Sylt"}
+
+    adlon = next(t for t in trips if t["name"] == "Hotel Adlon Berlin")
+    assert adlon["checkin"] == "2026-09-15"
+    assert adlon["checkout"] == "2026-09-18"
+    assert adlon["paid_price"] == 540.0
+    assert adlon["url"] == "https://www.hotels.com/ho123456/"
+
+    sylt = next(t for t in trips if t["name"] == "Strandhotel Sylt")
+    assert sylt["paid_price"] == 820.0
+    assert sylt["url"] == "https://www.hotels.com/ho999/"
+
+
+def test_parse_trips_ignores_incomplete_and_dedupes():
+    data = {
+        "a": {"name": "Ohne Datum"},  # kein Datum -> ignoriert
+        "b": {"name": "Doppelt", "checkin": "2026-01-01", "checkout": "2026-01-03"},
+        "c": {"name": "Doppelt", "checkInDate": "2026-01-01", "checkOutDate": "2026-01-03"},
+        "d": {"name": "Falschrum", "checkin": "2026-01-05", "checkout": "2026-01-01"},
+    }
+    trips = parse_trips(data)
+    assert len(trips) == 1
+    assert trips[0]["name"] == "Doppelt"
+
+
 def test_storage_roundtrip(tmp_path):
     b = _booking()
     h = PriceHistory(tmp_path)

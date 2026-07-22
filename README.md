@@ -70,6 +70,42 @@ darf also generisch sein.
 
 ---
 
+## Buchungen automatisch aus dem Konto importieren (optional)
+
+Statt Buchungen manuell einzutragen, kannst du sie aus deinem Hotels.com-Konto
+importieren. Hotels.com hat **keine offene API** und schützt Login + interne
+API mit Bot-Erkennung und 2FA – ein reiner HTTP-Client wäre nicht dauerhaft
+stabil. Deshalb nutzt der Import einen **echten Browser mit einmalig
+gespeicherter Session**:
+
+```bash
+# 1. Einmalig einloggen (Browser öffnet sich sichtbar, inkl. 2FA)
+python main.py account login
+
+# 2. Buchungen einlesen (nur anzeigen)
+python main.py account import
+
+# 3. In config.yaml übernehmen
+python main.py account import --merge
+```
+
+Der Import liest „Meine Reisen“ im eingeloggten Kontext und fängt die internen
+GraphQL-/JSON-Antworten ab. Die JSON-Struktur ist nicht dokumentiert und kann
+sich ändern; der Parser ist deshalb tolerant. Falls nichts erkannt wird:
+
+```bash
+python main.py account import --capture   # Rohantworten -> data/capture/
+```
+
+Damit lässt sich das Feld-Mapping in `rebooking/account.py`
+(`_NAME_KEYS`, `_CHECKIN_KEYS`, …) einmal an die echten Daten anpassen.
+
+> Hinweis: Importierte Buchungen werden mit `paid_price` aus der Kontoansicht
+> übernommen, wo verfügbar. Preis/Belegung bitte in der Web-UI kurz prüfen.
+> Der Login läuft **lokal** (interaktiv) – in GitHub Actions ist der
+> Konto-Import nicht sinnvoll; dort besser die manuelle/`--merge`-erzeugte
+> `config.yaml` verwenden.
+
 ## Benachrichtigungen
 
 In `config.yaml` unter `notifications`:
@@ -127,6 +163,7 @@ rebooking/
   models.py                Booking, PriceResult
   config.py                YAML + ${ENV}-Interpolation
   scraper.py               Playwright-Preisabfrage + Extraktion
+  account.py               Konto-Import via persistente Browser-Session
   storage.py               Preis-Historie (JSON)
   notifier.py              Konsole / E-Mail / Telegram
   monitor.py               Orchestrierung
