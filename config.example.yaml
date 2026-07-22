@@ -1,0 +1,56 @@
+# ---------------------------------------------------------------------------
+# Rebooking – Konfiguration
+# Kopiere diese Datei nach `config.yaml` und trage deine Buchungen ein.
+# `config.yaml` ist in .gitignore und wird NICHT eingecheckt.
+#
+# Zugangsdaten NIEMALS direkt hier eintragen – nutze ${UMGEBUNGSVARIABLEN}.
+# ---------------------------------------------------------------------------
+
+currency: EUR
+data_dir: data
+
+notifications:
+  # Kanal: console | email | telegram
+  channel: email
+
+  # Nur benachrichtigen, wenn die Ersparnis mindestens so groß ist:
+  min_drop_absolute: 5.0     # in Währungseinheiten (z.B. 5 EUR)
+  min_drop_percent: 2.0      # zusätzlich in Prozent (0 = egal)
+
+  email:
+    smtp_host: smtp.gmail.com
+    smtp_port: 587           # 587 = STARTTLS, 465 = SSL
+    username: ${SMTP_USERNAME}
+    password: ${SMTP_PASSWORD}   # bei Gmail: App-Passwort, nicht dein normales
+    from_addr: ${SMTP_USERNAME}
+    to_addr: tobias@rademachers.net
+
+  telegram:
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    chat_id: ${TELEGRAM_CHAT_ID}
+
+scraper:
+  headless: true
+  timeout_ms: 60000
+  locale: de-DE
+  override_url_dates: true   # Datum/Belegung in die URL schreiben
+  delay_between_seconds: 8    # Pause zwischen zwei Abfragen
+  # Optional eigene CSS-Selektoren, falls Hotels.com das Layout ändert:
+  price_selectors: []
+
+# ---------------------------------------------------------------------------
+# Deine Buchungen. So findest du den Link:
+#   Hotels.com → Hotelseite öffnen → komplette URL aus der Adresszeile kopieren.
+#   Das Datum/Belegung setzt der Bot selbst, du kannst die URL also generisch lassen.
+# ---------------------------------------------------------------------------
+bookings:
+  - name: "Beispiel – Hotel Adlon Berlin"
+    url: "https://www.hotels.com/ho123456/"
+    checkin: "2026-09-15"
+    checkout: "2026-09-18"
+    adults: 2
+    children: 0
+    rooms: 1
+    paid_price: 540.00        # was du insgesamt bezahlt hast
+    currency: EUR
+    notes: "Doppelzimmer, kostenlose Stornierung bis 13.09."

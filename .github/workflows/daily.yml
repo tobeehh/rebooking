@@ -1,0 +1,49 @@
+name: Daily price check
+
+on:
+  schedule:
+    # Täglich um 07:00 UTC (~09:00 Berlin). Zeit nach Bedarf anpassen.
+    - cron: "0 7 * * *"
+  workflow_dispatch: {}   # manuelles Auslösen im GitHub-UI
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      # Buchungen liegen (ohne Secrets) in einer eingecheckten Datei, hier:
+      # config.ci.yaml. Alternativ config.yaml aus einem Secret schreiben.
+      - name: Prepare config
+        run: |
+          if [ -f config.ci.yaml ]; then cp config.ci.yaml config.yaml; fi
+          if [ ! -f config.yaml ] && [ -n "${{ secrets.REBOOKING_CONFIG }}" ]; then
+            printf '%s' "${{ secrets.REBOOKING_CONFIG }}" > config.yaml
+          fi
+
+      - name: Run price check
+        env:
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py check
+
+      # Preis-Historie zwischen Läufen erhalten (als Artefakt bzw. Commit).
+      - name: Persist price history
+        uses: actions/upload-artifact@v4
+        with:
+          name: price-history
+          path: data/
+          retention-days: 90
