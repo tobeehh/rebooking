@@ -124,11 +124,20 @@ def cmd_account(args: argparse.Namespace) -> int:
         )
         return 1
 
+    _cancel_label = {True: "kostenlos stornierbar", False: "NICHT erstattbar", None: "Storno unbekannt"}
     print(f"\n{len(found)} Buchung(en) gefunden:\n")
     for b in found:
         price = b.get("paid_price")
+        fc = _cancel_label[b.get("free_cancellation")]
         print(f"• {b['name']}  {b['checkin']} → {b['checkout']}  "
-              f"{'Preis '+str(price)+' '+b.get('currency','') if price else '(Preis unbekannt)'}")
+              f"{'Preis '+str(price)+' '+b.get('currency','') if price else '(Preis unbekannt)'}  [{fc}]")
+
+    only_free = getattr(config.account, "only_if_free_cancellation", True)
+    if only_free:
+        skipped_nonref = [b for b in found if b.get("free_cancellation") is False]
+        if skipped_nonref:
+            print(f"\n{len(skipped_nonref)} nicht-erstattbare Buchung(en) werden NICHT überwacht "
+                  "(Umbuchen bei Preisverfall nicht möglich).")
 
     if not args.merge:
         print("\n(Nur Anzeige. Mit '--merge' in config.yaml übernehmen.)")
@@ -140,11 +149,20 @@ def cmd_account(args: argparse.Namespace) -> int:
     existing = raw.setdefault("bookings", [])
     have = {(e.get("name"), str(e.get("checkin")), str(e.get("checkout"))) for e in existing}
 
-    added = 0
+    added = skipped = 0
     for b in found:
+        # Nur frei stornierbare Buchungen überwachen (nicht-erstattbare überspringen).
+        if only_free and b.get("free_cancellation") is False:
+            skipped += 1
+            continue
         key = (b["name"], b["checkin"], b["checkout"])
         if key in have:
             continue
+        note = "importiert"
+        if b.get("free_cancellation") is None:
+            note += " – Stornierbarkeit unklar, bitte prüfen"
+        if b.get("cancellation_text"):
+            note += f" ({b['cancellation_text']})"
         entry = {
             "name": b["name"],
             "url": b["url"],
@@ -155,16 +173,19 @@ def cmd_account(args: argparse.Namespace) -> int:
             "rooms": 1,
             "paid_price": b.get("paid_price") or 0,
             "currency": b.get("currency", "EUR"),
-            "notes": "importiert – bitte Preis/Belegung prüfen",
+            "free_cancellation": b.get("free_cancellation"),
+            "notes": note,
         }
         existing.append(entry)
         have.add(key)
         added += 1
 
     cfg_path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
-    print(f"\n{added} neue Buchung(en) in {cfg_path} übernommen.")
-    if any(not b.get("paid_price") for b in found):
-        print("Achtung: Bei einigen fehlt der Preis – bitte in der Web-UI ergänzen.")
+    print(f"\n{added} Buchung(en) übernommen" + (f", {skipped} nicht-erstattbare übersprungen" if skipped else "") + ".")
+    if any(b.get("paid_price") in (None, 0) for b in found):
+        print("Achtung: Bei einigen fehlt der Preis – bitte prüfen.")
+    if any(not b.get("url") for b in found):
+        print("Hinweis: Für den Preis-Check fehlt teils der Hotel-Link – ergänze ihn in der Web-UI.")
     return 0
 
 

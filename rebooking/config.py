@@ -72,6 +72,8 @@ class AccountConfig:
     executable_path: str = ""
     # Optional: an laufenden Chrome per CDP anbinden (z.B. http://127.0.0.1:9222).
     cdp_url: str = ""
+    # Nur frei stornierbare Buchungen überwachen (Umbuchen sonst nicht möglich).
+    only_if_free_cancellation: bool = True
 
 
 @dataclass
@@ -147,6 +149,7 @@ class Config:
             headless=bool(a.get("headless", True)),
             executable_path=a.get("executable_path", "") or "",
             cdp_url=a.get("cdp_url", "") or "",
+            only_if_free_cancellation=bool(a.get("only_if_free_cancellation", True)),
         )
 
         return cls(

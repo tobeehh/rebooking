@@ -219,6 +219,41 @@ def test_parse_trips_nested_graphql_like():
     assert sylt["url"] == "https://www.hotels.com/ho999/"
 
 
+def test_egds_extractors():
+    from rebooking.account import (
+        _extract_cards, _find_total_price, _find_date_range, _find_paid_on,
+        _find_cancellation, _parse_money, _parse_date_range,
+    )
+
+    card = {
+        "__typename": "TripsUIBookedItemCard", "identifier": "eg:property:v2:HASH",
+        "primary": "Die Sonne Nollingen",
+        "cardAction": {"resource": {"value": "https://www.hotels.com/trips/egti-0CJ/details/ABC"}},
+        "enrichedSecondaries": [{"text": "Rheinfelden", "graphic": {"description": "Location"}}],
+        "media": {"url": "https://images.trvl-media.com/lodging/91000000/90830000/90827800/90827734/x.jpg"},
+    }
+    cards = _extract_cards([{"x": card}])
+    assert cards[0]["name"] == "Die Sonne Nollingen"
+    assert cards[0]["property_num"] == "90827734"
+    assert cards[0]["detail_url"].endswith("/details/ABC")
+
+    pricing = {"__typename": "TripDetailsUIPricingSummary",
+               "accessibility": "Total price is €194.64",
+               "label": {"stylizedText": "Total price"}, "value": {"stylizedText": "€194.64"}}
+    assert _find_total_price([{"a": pricing}]) == (194.64, "EUR")
+
+    assert _find_paid_on([{"t": {"text": "Paid on Jun 17, 2026"}}]) == "2026-06-17"
+    assert _find_date_range([{"t": {"text": "Jul 20 at 2:00pm - Jul 22 at 10:00am"}}]) == ("2026-07-20", "2026-07-22")
+
+    assert _find_cancellation([{"t": {"text": "Free cancellation until Jul 18"}}])["free"] is True
+    assert _find_cancellation([{"t": {"text": "This rate is non-refundable"}}])["free"] is False
+
+    assert _parse_money("€1.234,56") == (1234.56, "EUR")
+    assert _parse_money("$180.00") == (180.0, "USD")
+    # Jahresübergang Dez -> Jan
+    assert _parse_date_range("Dec 30 at 3pm - Jan 2 at 11am")[0].endswith("-12-30")
+
+
 def test_parse_trips_ignores_incomplete_and_dedupes():
     data = {
         "a": {"name": "Ohne Datum"},  # kein Datum -> ignoriert

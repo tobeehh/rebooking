@@ -418,6 +418,165 @@ def _extract_detail_urls(captured: list[Any]) -> list[str]:
     return urls
 
 
+# ---------------------------------------------------------------------------
+# EGDS-Extraktion (Hotels.com „Trips“ ist ein UI-Komponentenbaum)
+# ---------------------------------------------------------------------------
+
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+# "Jul 20 at 2:00pm - Jul 22 at 10:00am"
+_RANGE_RE = re.compile(
+    r"([A-Za-z]{3})[a-z]*\s+(\d{1,2})\b.{0,20}?[-–]\s*([A-Za-z]{3})[a-z]*\s+(\d{1,2})\b"
+)
+# "Paid on Jun 17, 2026"  /  "€194.64"
+_PAIDON_RE = re.compile(r"([A-Za-z]{3})[a-z]*\s+(\d{1,2}),\s*(\d{4})")
+_MONEY2_RE = re.compile(r"([€$£])\s*([0-9][0-9.,]*)")
+
+
+def _infer_year(month: int, day: int, ref: date | None = None) -> date:
+    ref = ref or date.today()
+    d = date(ref.year, month, day)
+    from datetime import timedelta
+
+    if d < ref - timedelta(days=120):
+        d = date(ref.year + 1, month, day)
+    return d
+
+
+def _parse_date_range(text: str) -> tuple[str, str] | None:
+    m = _RANGE_RE.search(text)
+    if not m:
+        return None
+    m1 = _MONTHS.get(m.group(1).lower())
+    m2 = _MONTHS.get(m.group(3).lower())
+    if not m1 or not m2:
+        return None
+    ci = _infer_year(m1, int(m.group(2)))
+    co = date(ci.year, m2, int(m.group(4)))
+    if co <= ci:
+        co = date(ci.year + 1, m2, int(m.group(4)))
+    return ci.isoformat(), co.isoformat()
+
+
+def _parse_money(s: str) -> tuple[float | None, str]:
+    m = _MONEY2_RE.search(s)
+    if not m:
+        return None, "EUR"
+    cur = {"€": "EUR", "$": "USD", "£": "GBP"}.get(m.group(1), "EUR")
+    raw = m.group(2)
+    # "194.64" oder "1.234,56"
+    if "," in raw and "." in raw:
+        raw = raw.replace(".", "").replace(",", ".") if raw.rfind(",") > raw.rfind(".") else raw.replace(",", "")
+    elif "," in raw:
+        raw = raw.replace(",", ".") if len(raw.split(",")[-1]) == 2 else raw.replace(",", "")
+    try:
+        return float(raw), cur
+    except ValueError:
+        return None, cur
+
+
+def _iter_texts(responses: list[Any]):
+    """Alle String-Werte in den Antworten (für Textsuche)."""
+    for body in responses:
+        for node in _walk(body):
+            if isinstance(node, dict):
+                for v in node.values():
+                    if isinstance(v, str):
+                        yield v
+
+
+def _find_total_price(responses: list[Any]) -> tuple[float | None, str]:
+    for body in responses:
+        for node in _walk(body):
+            if not isinstance(node, dict) or node.get("__typename") != "TripDetailsUIPricingSummary":
+                continue
+            acc = (node.get("accessibility") or "")
+            label = node.get("label") or {}
+            label_txt = label.get("stylizedText", "") if isinstance(label, dict) else ""
+            if acc.lower().startswith("total price") or label_txt.strip().lower() == "total price":
+                val = node.get("value") or {}
+                vtxt = val.get("stylizedText", "") if isinstance(val, dict) else ""
+                amount, cur = _parse_money(vtxt or acc)
+                if amount is not None:
+                    return amount, cur
+    return None, "EUR"
+
+
+def _find_paid_on(responses: list[Any]) -> str | None:
+    for txt in _iter_texts(responses):
+        if txt.lower().startswith("paid on"):
+            m = _PAIDON_RE.search(txt)
+            if m:
+                mon = _MONTHS.get(m.group(1).lower())
+                if mon:
+                    return date(int(m.group(3)), mon, int(m.group(2))).isoformat()
+    return None
+
+
+def _find_date_range(responses: list[Any]) -> tuple[str, str] | None:
+    for txt in _iter_texts(responses):
+        if " at " in txt and ("-" in txt or "–" in txt):
+            got = _parse_date_range(txt)
+            if got:
+                return got
+    return None
+
+
+def _find_cancellation(responses: list[Any]) -> dict:
+    """Sucht die Stornierbarkeit im Text. free: True/False/None (unbekannt)."""
+    free: bool | None = None
+    detail = ""
+    for txt in _iter_texts(responses):
+        low = txt.lower()
+        if "non-refundable" in low or "nonrefundable" in low or "non refundable" in low:
+            return {"free": False, "text": txt.strip()[:120]}
+        if "free cancellation" in low or "fully refundable" in low or "free cancelation" in low:
+            free, detail = True, txt.strip()[:120]
+        elif free is None and "refundable" in low:
+            free, detail = True, txt.strip()[:120]
+    return {"free": free, "text": detail}
+
+
+def _extract_cards(captured: list[Any]) -> list[dict]:
+    """Buchungskarten (TripsUIBookedItemCard): Hotelname, Property-ID, Detail-Link."""
+    cards: dict[str, dict] = {}
+    for body in captured:
+        for node in _walk(body):
+            if not isinstance(node, dict) or node.get("__typename") != "TripsUIBookedItemCard":
+                continue
+            pid = node.get("identifier") or ""
+            name = node.get("primary")
+            if not name:
+                continue
+            action = node.get("cardAction") or {}
+            res = (action.get("resource") or {}) if isinstance(action, dict) else {}
+            detail_url = res.get("value", "") if isinstance(res, dict) else ""
+            location = ""
+            for sec in node.get("enrichedSecondaries") or []:
+                g = sec.get("graphic") or {}
+                if isinstance(g, dict) and g.get("description") == "Location":
+                    location = sec.get("text", "")
+            # Property-Bild-URL enthält oft die Property-ID (letzter Zahlenordner).
+            prop_num = ""
+            media = node.get("media") or {}
+            murl = media.get("url", "") if isinstance(media, dict) else ""
+            mnum = re.search(r"/lodging/(?:\d+/){3}(\d+)/", murl)
+            if mnum:
+                prop_num = mnum.group(1)
+            key = pid or name
+            if key not in cards:
+                cards[key] = {
+                    "property_id": pid,
+                    "name": name,
+                    "location": location,
+                    "detail_url": detail_url,
+                    "property_num": prop_num,
+                }
+    return list(cards.values())
+
+
 def _auth_state(captured: list[Any]) -> str | None:
     """Ermittelt grob den Login-Status aus den Antworten (ANONYMOUS/AUTHENTICATED)."""
     for body in captured:
@@ -570,20 +729,55 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
             except Exception:
                 continue
 
-        # Den Buchungs-Detailseiten folgen – dort stehen Datum und Preis.
-        detail_urls = _extract_detail_urls(captured)
-        if verbose and detail_urls:
-            print(f"  Detail-Links: {len(detail_urls)} – lade Buchungsdetails …")
-        for u in detail_urls[:30]:
+        # Buchungskarten (Hotelname + Detail-Link) aus den Übersichtsseiten.
+        cards = _extract_cards(captured)
+        if verbose:
+            print(f"  Buchungskarten: {len(cards)}")
+
+        bookings: list[dict] = []
+        for card in cards[:30]:
+            if not card.get("detail_url"):
+                continue
+            start = len(captured)
             try:
-                _goto_with_retry(page, u)
+                _goto_with_retry(page, card["detail_url"])
                 try:
                     page.wait_for_load_state("networkidle", timeout=20000)
                 except Exception:
                     pass
                 page.wait_for_timeout(2500)
+                # Zusätzlich der „Beleg/Details"-Unterseite folgen (Storno-Bedingungen).
+                for sub in _extract_detail_urls(captured[start:])[:3]:
+                    if sub != card["detail_url"]:
+                        try:
+                            _goto_with_retry(page, sub)
+                            page.wait_for_timeout(2000)
+                        except Exception:
+                            pass
             except Exception:
-                continue
+                pass
+
+            page_slice = captured[start:]
+            amount, cur = _find_total_price(page_slice)
+            dates = _find_date_range(page_slice) or _find_date_range(captured)
+            cancel = _find_cancellation(page_slice)
+            checkin, checkout = (dates or ("", ""))
+            url = f"https://www.hotels.com/ho{card['property_num']}/" if card.get("property_num") else ""
+            bookings.append({
+                "name": card["name"],
+                "url": url,
+                "location": card.get("location", ""),
+                "checkin": checkin,
+                "checkout": checkout,
+                "paid_price": amount,
+                "currency": cur,
+                "paid_on": _find_paid_on(page_slice),
+                "free_cancellation": cancel.get("free"),
+                "cancellation_text": cancel.get("text", ""),
+            })
+            if verbose:
+                fc = {True: "kostenlos stornierbar", False: "NICHT erstattbar", None: "Storno unbekannt"}[cancel.get("free")]
+                print(f"    • {card['name']}: {checkin}→{checkout}  {amount} {cur}  [{fc}]")
 
         auth = _auth_state(captured)
         final_url = page.url
@@ -620,14 +814,6 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
                 "    Trip-ID erreichbar sind. Wenn Buchungen erkannt werden, ist alles gut."
             )
 
-    bookings: list[dict] = []
-    seen: set[tuple] = set()
-    for body in captured + embedded:
-        for b in parse_trips(body):
-            key = (b["name"], b["checkin"], b["checkout"])
-            if key not in seen:
-                seen.add(key)
-                bookings.append(b)
     return bookings
 
 
