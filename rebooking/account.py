@@ -423,12 +423,22 @@ def _extract_detail_urls(captured: list[Any]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 _MONTHS = {
+    # Englisch (3-Buchstaben)
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    # Deutsch (voll + Kurzformen)
+    "januar": 1, "februar": 2, "märz": 3, "maerz": 3, "mär": 3, "april": 4,
+    "mai": 5, "juni": 6, "juli": 7, "august": 8, "september": 9,
+    "oktober": 10, "okt": 10, "november": 11, "dezember": 12, "dez": 12,
 }
-# "Jul 20 at 2:00pm - Jul 22 at 10:00am"
-_RANGE_RE = re.compile(
+# EN: "Jul 20 at 2:00pm - Jul 22 at 10:00am"
+_RANGE_EN = re.compile(
     r"([A-Za-z]{3})[a-z]*\s+(\d{1,2})\b.{0,20}?[-–]\s*([A-Za-z]{3})[a-z]*\s+(\d{1,2})\b"
+)
+# DE: "20. Juli 2026 … – 22. Juli 2026" / "20. Juli … – 22. Juli"
+_RANGE_DE = re.compile(
+    r"(\d{1,2})\.\s*([A-Za-zäöüÄÖÜ]+)\.?(?:\s+(\d{4}))?.{0,25}?[-–].{0,12}?"
+    r"(\d{1,2})\.\s*([A-Za-zäöüÄÖÜ]+)\.?(?:\s+(\d{4}))?"
 )
 # "Paid on Jun 17, 2026"  /  "€194.64"
 _PAIDON_RE = re.compile(r"([A-Za-z]{3})[a-z]*\s+(\d{1,2}),\s*(\d{4})")
@@ -446,18 +456,30 @@ def _infer_year(month: int, day: int, ref: date | None = None) -> date:
 
 
 def _parse_date_range(text: str) -> tuple[str, str] | None:
-    m = _RANGE_RE.search(text)
-    if not m:
-        return None
-    m1 = _MONTHS.get(m.group(1).lower())
-    m2 = _MONTHS.get(m.group(3).lower())
-    if not m1 or not m2:
-        return None
-    ci = _infer_year(m1, int(m.group(2)))
-    co = date(ci.year, m2, int(m.group(4)))
-    if co <= ci:
-        co = date(ci.year + 1, m2, int(m.group(4)))
-    return ci.isoformat(), co.isoformat()
+    # Englisch: Monat Tag … – Monat Tag
+    m = _RANGE_EN.search(text)
+    if m:
+        m1 = _MONTHS.get(m.group(1).lower())
+        m2 = _MONTHS.get(m.group(3).lower())
+        if m1 and m2:
+            ci = _infer_year(m1, int(m.group(2)))
+            co = date(ci.year, m2, int(m.group(4)))
+            if co <= ci:
+                co = date(ci.year + 1, m2, int(m.group(4)))
+            return ci.isoformat(), co.isoformat()
+    # Deutsch: Tag. Monat [Jahr] … – Tag. Monat [Jahr]
+    m = _RANGE_DE.search(text)
+    if m:
+        m1 = _MONTHS.get(m.group(2).lower())
+        m2 = _MONTHS.get(m.group(5).lower())
+        if m1 and m2:
+            y1, y2 = m.group(3), m.group(6)
+            ci = date(int(y1), m1, int(m.group(1))) if y1 else _infer_year(m1, int(m.group(1)))
+            co = date(int(y2), m2, int(m.group(4))) if y2 else date(ci.year, m2, int(m.group(4)))
+            if co <= ci:
+                co = date(ci.year + 1, m2, int(m.group(4)))
+            return ci.isoformat(), co.isoformat()
+    return None
 
 
 def _parse_money(s: str) -> tuple[float | None, str]:
@@ -488,30 +510,49 @@ def _iter_texts(responses: list[Any]):
 
 
 def _find_total_price(responses: list[Any]) -> tuple[float | None, str]:
+    """Sprachunabhängig: Gesamtpreis = Geldbetrag im value der Preissumme.
+
+    Bevorzugt die fett gesetzte Summe (Gesamtpreis), sonst den größten Betrag.
+    """
+    candidates: list[tuple[float, str, bool]] = []
     for body in responses:
         for node in _walk(body):
             if not isinstance(node, dict) or node.get("__typename") != "TripDetailsUIPricingSummary":
                 continue
-            acc = (node.get("accessibility") or "")
-            label = node.get("label") or {}
-            label_txt = label.get("stylizedText", "") if isinstance(label, dict) else ""
-            if acc.lower().startswith("total price") or label_txt.strip().lower() == "total price":
-                val = node.get("value") or {}
-                vtxt = val.get("stylizedText", "") if isinstance(val, dict) else ""
-                amount, cur = _parse_money(vtxt or acc)
-                if amount is not None:
-                    return amount, cur
-    return None, "EUR"
+            val = node.get("value")
+            if not isinstance(val, dict):
+                continue
+            amount, cur = _parse_money(val.get("stylizedText", "") or "")
+            if amount is None:
+                continue
+            is_bold = (val.get("weight") == "BOLD")
+            candidates.append((amount, cur, is_bold))
+    if not candidates:
+        return None, "EUR"
+    bold = [c for c in candidates if c[2]]
+    pick = bold[0] if bold else max(candidates, key=lambda c: c[0])
+    return pick[0], pick[1]
+
+
+# "Paid on Jun 17, 2026" (EN) / "Bezahlt am 17. Juni 2026" (DE)
+_PAIDON_DE_RE = re.compile(r"(\d{1,2})\.\s*([A-Za-zäöüÄÖÜ]+)\.?\s+(\d{4})")
 
 
 def _find_paid_on(responses: list[Any]) -> str | None:
     for txt in _iter_texts(responses):
-        if txt.lower().startswith("paid on"):
+        low = txt.lower()
+        if low.startswith("paid on"):
             m = _PAIDON_RE.search(txt)
             if m:
                 mon = _MONTHS.get(m.group(1).lower())
                 if mon:
                     return date(int(m.group(3)), mon, int(m.group(2))).isoformat()
+        if low.startswith("bezahlt am") or low.startswith("gezahlt am"):
+            m = _PAIDON_DE_RE.search(txt)
+            if m:
+                mon = _MONTHS.get(m.group(2).lower())
+                if mon:
+                    return date(int(m.group(3)), mon, int(m.group(1))).isoformat()
     return None
 
 
@@ -525,16 +566,20 @@ def _find_date_range(responses: list[Any]) -> tuple[str, str] | None:
 
 
 def _find_cancellation(responses: list[Any]) -> dict:
-    """Sucht die Stornierbarkeit im Text. free: True/False/None (unbekannt)."""
+    """Stornierbarkeit (DE+EN). free: True/False/None (unbekannt)."""
     free: bool | None = None
     detail = ""
     for txt in _iter_texts(responses):
         low = txt.lower()
-        if "non-refundable" in low or "nonrefundable" in low or "non refundable" in low:
+        if ("non-refundable" in low or "nonrefundable" in low or "non refundable" in low
+                or "nicht erstattbar" in low or "nicht stornierbar" in low
+                or "keine erstattung" in low):
             return {"free": False, "text": txt.strip()[:120]}
-        if "free cancellation" in low or "fully refundable" in low or "free cancelation" in low:
+        if ("free cancellation" in low or "fully refundable" in low or "free cancelation" in low
+                or "kostenlose stornierung" in low or "kostenlos stornier" in low
+                or "gratis stornier" in low):
             free, detail = True, txt.strip()[:120]
-        elif free is None and "refundable" in low:
+        elif free is None and ("refundable" in low or "erstattbar" in low or "stornier" in low):
             free, detail = True, txt.strip()[:120]
     return {"free": free, "text": detail}
 
@@ -758,17 +803,23 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
                 pass
 
             page_slice = captured[start:]
-            if verbose:
-                stext = " ".join(json.dumps(b, ensure_ascii=False) for b in page_slice)
-                print(f"    [debug {card['name'][:22]}] resp={len(page_slice)} "
-                      f"pricingModul={'tripsItemPricingAndRewards' in stext} "
-                      f"summary={'TripDetailsUIPricingSummary' in stext} "
-                      f"totalPrice={'Total price' in stext} "
-                      f"dateRange={bool(_find_date_range(page_slice))} "
-                      f"cancelText={'ancellation' in stext or 'efundable' in stext}")
             amount, cur = _find_total_price(page_slice)
             dates = _find_date_range(page_slice) or _find_date_range(captured)
             cancel = _find_cancellation(page_slice)
+            if verbose and (amount is None or not dates):
+                # Zeigt echte Kandidaten-Texte (Datum/Storno), um Muster zu justieren.
+                samples: list[str] = []
+                for t in _iter_texts(page_slice):
+                    low = t.lower()
+                    if (re.search(r"\d", t) and (_DATEISH_RE.search(t) or "uhr" in low or "–" in t)) \
+                            or any(k in low for k in ("stornier", "erstattbar", "refund", "cancel")):
+                        if t not in samples:
+                            samples.append(t)
+                    if len(samples) >= 6:
+                        break
+                print(f"    [debug {card['name'][:22]}] price={amount} dates={dates}")
+                for s in samples:
+                    print(f"        text: {s[:75]}")
             checkin, checkout = (dates or ("", ""))
             url = f"https://www.hotels.com/ho{card['property_num']}/" if card.get("property_num") else ""
             bookings.append({
