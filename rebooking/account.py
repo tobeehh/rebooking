@@ -166,6 +166,9 @@ _BOOKING_KEY_HINTS = (
     "checkout", "check_out", "checkoutdate", "reservation", "confirmation", "roomtype",
     "numberofnights", "nights", "propertyid", "staydate", "arrival", "departure",
     "leadprice", "totalprice", "pricedetails", "itinerary", "itineraryitemid",
+    # Preis-Felder (verschiedene Schreibweisen)
+    "price", "amount", "paid", "payment", "subtotal", "grandtotal", "total",
+    "fare", "charge", "formattedprice", "pricesummary", "tripprice", "ordertotal",
 )
 
 # Reine Tracking-/Analytics-Knoten, die wir NICHT sehen wollen.
@@ -232,8 +235,14 @@ def inspect_capture(capture_dir: str | Path, max_chars: int = 3000, raw: bool = 
         return "\n".join(out)
 
     out.append(f"\n{len(shapes)} Knoten-Formen mit Buchungs-Feldern:")
+    _prio = ("price", "amount", "paid", "total", "checkin", "checkout", "date", "text")
+
+    def _score(kv):
+        keys_join = " ".join(kv[0]).lower()
+        return sum(1 for p in _prio if p in keys_join)
+
     for i, (key, (example, cnt)) in enumerate(
-        sorted(shapes.items(), key=lambda kv: len(kv[0]), reverse=True)[:10], 1
+        sorted(shapes.items(), key=lambda kv: (_score(kv), kv[1][1]), reverse=True)[:15], 1
     ):
         blob = json.dumps(example, indent=2, ensure_ascii=False)
         if len(blob) > max_chars:
