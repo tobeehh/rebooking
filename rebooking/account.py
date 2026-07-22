@@ -165,7 +165,7 @@ _BOOKING_KEY_HINTS = (
     "propertyname", "hotelname", "property_name", "checkin", "check_in", "checkindate",
     "checkout", "check_out", "checkoutdate", "reservation", "confirmation", "roomtype",
     "numberofnights", "nights", "propertyid", "staydate", "arrival", "departure",
-    "leadprice", "totalprice", "pricedetails", "itinerary",
+    "leadprice", "totalprice", "pricedetails", "itinerary", "itineraryitemid",
 )
 
 # Reine Tracking-/Analytics-Knoten, die wir NICHT sehen wollen.
@@ -187,14 +187,17 @@ def _booking_like_nodes(data: Any) -> list[dict]:
     return hits
 
 
-def inspect_capture(capture_dir: str | Path, max_chars: int = 3000) -> str:
-    """Geschwärzte Struktur-Übersicht: Buchungs-Knoten (per Feldname), dedupliziert."""
+def inspect_capture(capture_dir: str | Path, max_chars: int = 3000, raw: bool = False) -> str:
+    """Struktur-Übersicht der Buchungs-Knoten (per Feldname), dedupliziert.
+
+    raw=True zeigt echte Werte (zum Mapping); sonst werden freie Texte geschwärzt.
+    """
     cap = Path(capture_dir)
     files = sorted(cap.glob("*.json")) if cap.exists() else []
     if not files:
         return f"Keine Mitschnitte in {cap}. Erst 'account import --cdp --capture' ausführen."
 
-    shapes: dict[tuple, list] = {}  # key-tuple -> [redacted_example, count]
+    shapes: dict[tuple, list] = {}  # key-tuple -> [example, count]
     url_list: list[str] = []
     for f in files:
         # Dateiname kodiert die URL – hilft zu sehen, welche Endpunkte Daten liefern.
@@ -206,7 +209,7 @@ def inspect_capture(capture_dir: str | Path, max_chars: int = 3000) -> str:
         for n in _booking_like_nodes(data):
             key = tuple(sorted(n.keys()))
             if key not in shapes:
-                shapes[key] = [_redact(n), 0]
+                shapes[key] = [n if raw else _redact(n), 0]
             shapes[key][1] += 1
 
     out: list[str] = [f"{len(files)} Mitschnitte. Endpunkte:"]
