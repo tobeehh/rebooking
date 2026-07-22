@@ -88,6 +88,8 @@ def cmd_account(args: argparse.Namespace) -> int:
     config = Config.load(args.config)
     if getattr(args, "headed", False):
         config.account.headless = False
+    if getattr(args, "cdp", False):
+        config.account.cdp_url = f"http://127.0.0.1:{args.cdp_port}"
 
     if args.action == "login":
         login(config.account)
@@ -296,6 +298,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_acc.add_argument("--capture", action="store_true", help="Rohantworten zum Justieren speichern")
     p_acc.add_argument("--merge", action="store_true", help="gefundene Buchungen in config.yaml übernehmen")
     p_acc.add_argument("--headed", action="store_true", help="Import im sichtbaren Browser (robuster gegen Bot-Schutz)")
+    p_acc.add_argument("--cdp", action="store_true", help="an laufenden Chrome (python main.py chrome) anbinden")
+    p_acc.add_argument("--cdp-port", type=int, default=9222, help="Debug-Port des Chrome (Standard 9222)")
     p_acc.set_defaults(func=cmd_account)
 
     p_chrome = sub.add_parser("chrome", help="echten Chrome mit Debug-Port starten (für CDP-Modus)")
