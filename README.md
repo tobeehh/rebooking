@@ -178,7 +178,7 @@ config.example.yaml        Vorlage (kopieren nach config.yaml)
 Reine Logik (ohne Netzwerk/Browser):
 
 ```bash
-pip install pytest
+pip install -r requirements-dev.txt   # installiert u.a. pytest
 python -m pytest -q tests/test_core.py
 ```
 
