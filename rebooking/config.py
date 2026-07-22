@@ -50,6 +50,9 @@ class ScraperConfig:
     delay_between_seconds: float = 8.0
     # Optionaler Pfad zu einer Chrome/Chromium-Binary (statt Download).
     executable_path: str = ""
+    # Optional: an laufenden Chrome per CDP anbinden (z.B. http://127.0.0.1:9222)
+    # statt einen eigenen Browser zu starten – robuster gegen Bot-Schutz.
+    cdp_url: str = ""
 
 
 @dataclass
@@ -65,6 +68,8 @@ class AccountConfig:
     headless: bool = True
     # Optionaler Pfad zu einer Chrome/Chromium-Binary (statt Download).
     executable_path: str = ""
+    # Optional: an laufenden Chrome per CDP anbinden (z.B. http://127.0.0.1:9222).
+    cdp_url: str = ""
 
 
 @dataclass
@@ -108,6 +113,7 @@ class Config:
             price_selectors=list(s.get("price_selectors", []) or []),
             delay_between_seconds=float(s.get("delay_between_seconds", 8.0)),
             executable_path=s.get("executable_path", "") or "",
+            cdp_url=s.get("cdp_url", "") or "",
         )
 
         bookings: list[Booking] = []
@@ -137,6 +143,7 @@ class Config:
             login_url=a.get("login_url", "https://www.hotels.com/login"),
             headless=bool(a.get("headless", True)),
             executable_path=a.get("executable_path", "") or "",
+            cdp_url=a.get("cdp_url", "") or "",
         )
 
         return cls(

@@ -154,27 +154,36 @@ def fetch_price(booking: Booking, scraper: ScraperConfig) -> PriceResult:
     url = build_url(booking, scraper)
     now = datetime.now()
 
+    use_cdp = bool(scraper.cdp_url)
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=scraper.headless,
-                executable_path=scraper.executable_path or None,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ],
-            )
-            context = browser.new_context(
-                user_agent=scraper.user_agent,
-                locale=scraper.locale,
-                viewport={"width": 1366, "height": 900},
-            )
-            # Einfache Stealth-Anpassung: navigator.webdriver verstecken.
-            context.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-            )
-            page = context.new_page()
+            if use_cdp:
+                # An laufenden, echten Chrome anbinden (robuster gegen Bot-Schutz).
+                browser = p.chromium.connect_over_cdp(scraper.cdp_url)
+                context = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = context.new_page()
+            else:
+                browser = p.chromium.launch(
+                    headless=scraper.headless,
+                    executable_path=scraper.executable_path or None,
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-http2",
+                    ],
+                )
+                context = browser.new_context(
+                    user_agent=scraper.user_agent,
+                    locale=scraper.locale,
+                    viewport={"width": 1366, "height": 900},
+                )
+                # Einfache Stealth-Anpassung: navigator.webdriver verstecken.
+                context.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                )
+                page = context.new_page()
+
             page.goto(url, wait_until="domcontentloaded", timeout=scraper.timeout_ms)
             _dismiss_cookie_banner(page)
             try:
@@ -184,7 +193,10 @@ def fetch_price(booking: Booking, scraper: ScraperConfig) -> PriceResult:
             page.wait_for_timeout(2500)
 
             prices = _extract_prices(page, scraper)
-            browser.close()
+            if use_cdp:
+                page.close()      # nur unseren Tab schließen, Chrome des Nutzers bleibt offen
+            else:
+                browser.close()
 
         if not prices:
             return PriceResult(

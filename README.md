@@ -89,6 +89,40 @@ python main.py account import
 python main.py account import --merge
 ```
 
+### Bot-Schutz umgehen: an den eigenen Chrome anbinden (CDP)
+
+Hotels.com blockiert automatisierte Browser (auch sichtbare) mit hoher
+Wahrscheinlichkeit. Der robusteste **legitime** Weg ist, keinen eigenen
+Browser zu starten, sondern sich an deinen **echten, laufenden Chrome**
+anzubinden – für die Bot-Erkennung sieht das aus wie du, nicht wie ein Bot.
+
+```bash
+# 1. Deinen Chrome mit Debug-Port + eigenem Profil starten:
+python main.py chrome
+#    -> im geöffneten Chrome bei Hotels.com einloggen (bleibt gespeichert)
+
+# 2. In config.yaml eintragen:
+#    account:
+#      cdp_url: "http://127.0.0.1:9222"
+#    scraper:
+#      cdp_url: "http://127.0.0.1:9222"
+
+# 3. In einem zweiten Terminal – Chrome offen lassen:
+python main.py account import          # nutzt deinen echten Chrome
+python main.py check                    # auch der Preis-Check läuft dann darüber
+```
+
+Der `chrome`-Befehl findet Chrome automatisch (macOS/Windows/Linux); sonst per
+`--chrome-path` angeben. Das Profil liegt unter `data/chrome_profile` und ist
+von deinem normalen Chrome-Profil getrennt – dein Alltags-Chrome bleibt
+unberührt. Lässt du dieses Chrome-Fenster geöffnet, funktionieren Import und
+täglicher Check ohne weiteres Zutun.
+
+> Kein „Stealth"-Trick: es ist schlicht dein Browser mit deiner Session. Damit
+> entfällt der Umweg über `account login`/`--headed`.
+
+### Ohne CDP (einfacher Automatik-Browser)
+
 Der Import liest „Meine Reisen“ im eingeloggten Kontext und fängt die internen
 GraphQL-/JSON-Antworten ab. Die JSON-Struktur ist nicht dokumentiert und kann
 sich ändern; der Parser ist deshalb tolerant. Falls nichts erkannt wird:

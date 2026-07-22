@@ -38,10 +38,13 @@ account:
   login_url: "https://www.hotels.com/login"
   headless: true                          # beim Import; Login ist immer sichtbar
   # executable_path: ""                    # optional: Pfad zu vorhandenem Chrome
+  # cdp_url: "http://127.0.0.1:9222"       # empfohlen bei Bot-Schutz: an eigenen
+                                           # Chrome anbinden (siehe README, 'chrome'-Befehl)
 
 scraper:
   headless: true
   # executable_path: ""                    # optional: Pfad zu vorhandenem Chrome
+  # cdp_url: "http://127.0.0.1:9222"       # an laufenden echten Chrome anbinden
   timeout_ms: 60000
   locale: de-DE
   override_url_dates: true   # Datum/Belegung in die URL schreiben

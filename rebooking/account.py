@@ -257,10 +257,12 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None) -> li
     """
     from playwright.sync_api import sync_playwright
 
+    use_cdp = bool(account.cdp_url)
     profile = Path(account.profile_dir)
-    if not profile.exists():
+    if not use_cdp and not profile.exists():
         raise RuntimeError(
-            "Kein Browser-Profil gefunden. Bitte zuerst 'python main.py account login' ausführen."
+            "Kein Browser-Profil gefunden. Bitte zuerst 'python main.py account login' ausführen "
+            "oder cdp_url setzen und dich in deinem eigenen Chrome einloggen."
         )
 
     captured: list[Any] = []
@@ -269,13 +271,19 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None) -> li
         cap_path.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(
-            user_data_dir=str(profile),
-            headless=account.headless,
-            executable_path=account.executable_path or None,
-            user_agent=_USER_AGENT,
-            args=_LAUNCH_ARGS,
-        )
+        browser = None
+        if use_cdp:
+            # An bereits laufenden, eingeloggten Chrome anbinden (kein Bot-Browser).
+            browser = p.chromium.connect_over_cdp(account.cdp_url)
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+        else:
+            ctx = p.chromium.launch_persistent_context(
+                user_data_dir=str(profile),
+                headless=account.headless,
+                executable_path=account.executable_path or None,
+                user_agent=_USER_AGENT,
+                args=_LAUNCH_ARGS,
+            )
 
         def on_response(resp):  # noqa: ANN001
             try:
@@ -295,7 +303,8 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None) -> li
             except Exception:
                 pass  # nicht-JSON oder abgebrochene Antworten ignorieren
 
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        # Bei CDP eine eigene Seite öffnen (bestehende Tabs des Nutzers nicht stören).
+        page = ctx.new_page() if use_cdp else (ctx.pages[0] if ctx.pages else ctx.new_page())
         page.on("response", on_response)
         _goto_with_retry(page, account.trips_url)
         try:
@@ -303,7 +312,11 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None) -> li
         except Exception:
             pass
         page.wait_for_timeout(4000)
-        ctx.close()
+
+        if use_cdp:
+            page.close()          # nur unseren Tab schließen, Chrome des Nutzers bleibt offen
+        else:
+            ctx.close()
 
     bookings: list[dict] = []
     seen: set[tuple] = set()

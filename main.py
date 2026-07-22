@@ -157,6 +157,66 @@ def cmd_account(args: argparse.Namespace) -> int:
     return 0
 
 
+def _find_chrome() -> str | None:
+    import shutil
+    import sys
+
+    candidates: list[str] = []
+    if sys.platform == "darwin":
+        candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+    elif sys.platform.startswith("win"):
+        import os
+
+        for base in (os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+                     os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")):
+            candidates.append(base + r"\Google\Chrome\Application\chrome.exe")
+    else:
+        for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+            path = shutil.which(name)
+            if path:
+                candidates.append(path)
+    for c in candidates:
+        if c and Path(c).exists():
+            return c
+    return None
+
+
+def cmd_chrome(args: argparse.Namespace) -> int:
+    """Startet den echten Chrome mit Debug-Port + eigenem Profil (für CDP)."""
+    import subprocess
+
+    from rebooking.config import Config
+
+    config = Config.load(args.config)
+    chrome = args.chrome_path or _find_chrome()
+    if not chrome:
+        print("Chrome nicht gefunden. Bitte Pfad angeben: python main.py chrome --chrome-path '/pfad/zu/chrome'")
+        return 1
+
+    profile = Path(config.data_dir) / "chrome_profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        chrome,
+        f"--remote-debugging-port={args.port}",
+        f"--user-data-dir={profile}",
+        "https://www.hotels.com/trips",
+    ]
+    print("Starte deinen Chrome mit Debug-Port …")
+    print("  " + " ".join(cmd))
+    print(
+        f"\n>>> Logge dich im geöffneten Chrome bei Hotels.com ein (bleibt in diesem Profil gespeichert).\n"
+        f">>> Lass dieses Fenster offen und setze in config.yaml:\n"
+        f"      account:\n        cdp_url: \"http://127.0.0.1:{args.port}\"\n"
+        f"      scraper:\n        cdp_url: \"http://127.0.0.1:{args.port}\"\n"
+        f">>> Dann in einem zweiten Terminal:  python main.py account import\n"
+    )
+    subprocess.Popen(cmd)
+    return 0
+
+
 def cmd_web(args: argparse.Namespace) -> int:
     from rebooking.webapp import create_app
 
@@ -186,6 +246,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_acc.add_argument("--merge", action="store_true", help="gefundene Buchungen in config.yaml übernehmen")
     p_acc.add_argument("--headed", action="store_true", help="Import im sichtbaren Browser (robuster gegen Bot-Schutz)")
     p_acc.set_defaults(func=cmd_account)
+
+    p_chrome = sub.add_parser("chrome", help="echten Chrome mit Debug-Port starten (für CDP-Modus)")
+    p_chrome.add_argument("--port", type=int, default=9222)
+    p_chrome.add_argument("--chrome-path", default="", help="Pfad zur Chrome-Binary (falls nicht gefunden)")
+    p_chrome.set_defaults(func=cmd_chrome)
 
     p_web = sub.add_parser("web", help="Web-UI starten")
     p_web.add_argument("--host", default="127.0.0.1")
