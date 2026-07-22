@@ -758,6 +758,14 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
                 pass
 
             page_slice = captured[start:]
+            if verbose:
+                stext = " ".join(json.dumps(b, ensure_ascii=False) for b in page_slice)
+                print(f"    [debug {card['name'][:22]}] resp={len(page_slice)} "
+                      f"pricingModul={'tripsItemPricingAndRewards' in stext} "
+                      f"summary={'TripDetailsUIPricingSummary' in stext} "
+                      f"totalPrice={'Total price' in stext} "
+                      f"dateRange={bool(_find_date_range(page_slice))} "
+                      f"cancelText={'ancellation' in stext or 'efundable' in stext}")
             amount, cur = _find_total_price(page_slice)
             dates = _find_date_range(page_slice) or _find_date_range(captured)
             cancel = _find_cancellation(page_slice)
