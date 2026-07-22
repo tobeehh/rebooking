@@ -435,14 +435,18 @@ _MONTHS = {
 _RANGE_EN = re.compile(
     r"([A-Za-z]{3})[a-z]*\s+(\d{1,2})\b.{0,20}?[-–]\s*([A-Za-z]{3})[a-z]*\s+(\d{1,2})\b"
 )
-# DE: "20. Juli 2026 … – 22. Juli 2026" / "20. Juli … – 22. Juli"
+# DE: "von 20. Juli, 14:00 Uhr bis 22. Juli, 10:00 Uhr" / "20. Juli 2026 – 22. Juli 2026"
+# Trennung wahlweise per "bis" oder Bindestrich/Gedankenstrich.
 _RANGE_DE = re.compile(
-    r"(\d{1,2})\.\s*([A-Za-zäöüÄÖÜ]+)\.?(?:\s+(\d{4}))?.{0,25}?[-–].{0,12}?"
+    r"(\d{1,2})\.\s*([A-Za-zäöüÄÖÜ]+)\.?(?:\s+(\d{4}))?.{0,25}?(?:\bbis\b|[-–]).{0,12}?"
     r"(\d{1,2})\.\s*([A-Za-zäöüÄÖÜ]+)\.?(?:\s+(\d{4}))?"
 )
-# "Paid on Jun 17, 2026"  /  "€194.64"
+# "Paid on Jun 17, 2026"
 _PAIDON_RE = re.compile(r"([A-Za-z]{3})[a-z]*\s+(\d{1,2}),\s*(\d{4})")
-_MONEY2_RE = re.compile(r"([€$£])\s*([0-9][0-9.,]*)")
+# Geldbetrag: Symbol davor ("€194.64") ODER dahinter ("194,64 €" / "194,64 EUR")
+_MONEY_BEFORE = re.compile(r"([€$£])\s*([0-9][0-9.,]*[0-9]|[0-9])")
+_MONEY_AFTER = re.compile(r"([0-9][0-9.,]*[0-9]|[0-9])\s*(€|EUR|\$|USD|£|GBP)", re.IGNORECASE)
+_CUR = {"€": "EUR", "$": "USD", "£": "GBP", "eur": "EUR", "usd": "USD", "gbp": "GBP"}
 
 
 def _infer_year(month: int, day: int, ref: date | None = None) -> date:
@@ -483,12 +487,16 @@ def _parse_date_range(text: str) -> tuple[str, str] | None:
 
 
 def _parse_money(s: str) -> tuple[float | None, str]:
-    m = _MONEY2_RE.search(s)
-    if not m:
-        return None, "EUR"
-    cur = {"€": "EUR", "$": "USD", "£": "GBP"}.get(m.group(1), "EUR")
-    raw = m.group(2)
-    # "194.64" oder "1.234,56"
+    m = _MONEY_BEFORE.search(s)
+    if m:
+        sym, raw = m.group(1), m.group(2)
+    else:
+        m = _MONEY_AFTER.search(s)
+        if not m:
+            return None, "EUR"
+        raw, sym = m.group(1), m.group(2)
+    cur = _CUR.get(sym.lower(), "EUR")
+    # "194.64" (US) oder "1.234,56" / "194,64" (DE)
     if "," in raw and "." in raw:
         raw = raw.replace(".", "").replace(",", ".") if raw.rfind(",") > raw.rfind(".") else raw.replace(",", "")
     elif "," in raw:
@@ -558,10 +566,11 @@ def _find_paid_on(responses: list[Any]) -> str | None:
 
 def _find_date_range(responses: list[Any]) -> tuple[str, str] | None:
     for txt in _iter_texts(responses):
-        if " at " in txt and ("-" in txt or "–" in txt):
-            got = _parse_date_range(txt)
-            if got:
-                return got
+        if len(txt) > 200 or not any(c.isdigit() for c in txt):
+            continue
+        got = _parse_date_range(txt)
+        if got:
+            return got
     return None
 
 
@@ -577,9 +586,7 @@ def _find_cancellation(responses: list[Any]) -> dict:
             return {"free": False, "text": txt.strip()[:120]}
         if ("free cancellation" in low or "fully refundable" in low or "free cancelation" in low
                 or "kostenlose stornierung" in low or "kostenlos stornier" in low
-                or "gratis stornier" in low):
-            free, detail = True, txt.strip()[:120]
-        elif free is None and ("refundable" in low or "erstattbar" in low or "stornier" in low):
+                or "gratis stornier" in low or "kostenfrei stornier" in low):
             free, detail = True, txt.strip()[:120]
     return {"free": free, "text": detail}
 
