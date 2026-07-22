@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import date, datetime
+from pathlib import Path
 
 from rebooking.config import Config
 from rebooking.models import Booking, PriceResult
