@@ -37,9 +37,11 @@ account:
   trips_url: "https://www.hotels.com/trips"
   login_url: "https://www.hotels.com/login"
   headless: true                          # beim Import; Login ist immer sichtbar
+  # executable_path: ""                    # optional: Pfad zu vorhandenem Chrome
 
 scraper:
   headless: true
+  # executable_path: ""                    # optional: Pfad zu vorhandenem Chrome
   timeout_ms: 60000
   locale: de-DE
   override_url_dates: true   # Datum/Belegung in die URL schreiben

@@ -175,7 +175,24 @@ config.example.yaml        Vorlage (kopieren nach config.yaml)
 
 ## Tests
 
+Reine Logik (ohne Netzwerk/Browser):
+
 ```bash
 pip install pytest
-python -m pytest -q
+python -m pytest -q tests/test_core.py
 ```
+
+**Integrationstest mit echtem Browser** – verifiziert die komplette
+Browser-Mechanik (Konto-Import via Response-Interception + Preis-Scraper)
+gegen einen lokalen Fake-Server, **ohne Hotels.com und ohne Login**:
+
+```bash
+python -m pytest -q tests/test_integration.py
+# vorhandenes Chrome nutzen statt Download:
+REBOOKING_TEST_CHROME=/pfad/zu/chrome python -m pytest -q tests/test_integration.py
+```
+
+Der Test überspringt sich automatisch, wenn kein Chromium verfügbar ist.
+Er beweist, dass Browserstart, das Abfangen der GraphQL-Antwort und das
+Parsen der Buchungen real funktionieren – lediglich die Hotels.com-Gegenstelle
+ist durch einen lokalen Server ersetzt (mangels echtem Login unvermeidbar).

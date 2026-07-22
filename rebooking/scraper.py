@@ -158,6 +158,7 @@ def fetch_price(booking: Booking, scraper: ScraperConfig) -> PriceResult:
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=scraper.headless,
+                executable_path=scraper.executable_path or None,
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",

@@ -202,7 +202,12 @@ def login(account) -> None:
         ctx = p.chromium.launch_persistent_context(
             user_data_dir=str(profile),
             headless=False,
-            args=["--disable-blink-features=AutomationControlled"],
+            executable_path=account.executable_path or None,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto(account.login_url, wait_until="domcontentloaded")
@@ -241,7 +246,12 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None) -> li
         ctx = p.chromium.launch_persistent_context(
             user_data_dir=str(profile),
             headless=account.headless,
-            args=["--disable-blink-features=AutomationControlled"],
+            executable_path=account.executable_path or None,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
         )
 
         def on_response(resp):  # noqa: ANN001

@@ -48,6 +48,8 @@ class ScraperConfig:
     price_selectors: list[str] = field(default_factory=list)
     # Sekunden Verzögerung zwischen zwei Abfragen, um nicht aufzufallen.
     delay_between_seconds: float = 8.0
+    # Optionaler Pfad zu einer Chrome/Chromium-Binary (statt Download).
+    executable_path: str = ""
 
 
 @dataclass
@@ -61,6 +63,8 @@ class AccountConfig:
     login_url: str = "https://www.hotels.com/login"
     # Beim Import Login-Fenster sichtbar? (für den einmaligen Login nötig)
     headless: bool = True
+    # Optionaler Pfad zu einer Chrome/Chromium-Binary (statt Download).
+    executable_path: str = ""
 
 
 @dataclass
@@ -103,6 +107,7 @@ class Config:
             override_url_dates=bool(s.get("override_url_dates", True)),
             price_selectors=list(s.get("price_selectors", []) or []),
             delay_between_seconds=float(s.get("delay_between_seconds", 8.0)),
+            executable_path=s.get("executable_path", "") or "",
         )
 
         bookings: list[Booking] = []
@@ -131,6 +136,7 @@ class Config:
             trips_url=a.get("trips_url", "https://www.hotels.com/trips"),
             login_url=a.get("login_url", "https://www.hotels.com/login"),
             headless=bool(a.get("headless", True)),
+            executable_path=a.get("executable_path", "") or "",
         )
 
         return cls(
