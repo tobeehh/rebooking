@@ -186,9 +186,38 @@ def parse_trips(data: Any) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+)
+
+# --disable-http2 umgeht ERR_HTTP2_PROTOCOL_ERROR, das bei manchen Seiten im
+# automatisierten Chromium auftritt.
+_LAUNCH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-http2",
+]
+
+
 def _looks_interesting(url: str) -> bool:
     url = url.lower()
     return "graphql" in url or "trips" in url or "itinerar" in url or "booking" in url
+
+
+def _goto_with_retry(page, url: str, attempts: int = 3) -> None:
+    """Navigiert mit Wiederholungen (fängt transiente Protokoll-/Netzfehler ab)."""
+    last_exc = None
+    for i in range(attempts):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            page.wait_for_timeout(2000 * (i + 1))
+    if last_exc:
+        raise last_exc
 
 
 def login(account) -> None:
@@ -203,11 +232,8 @@ def login(account) -> None:
             user_data_dir=str(profile),
             headless=False,
             executable_path=account.executable_path or None,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            ],
+            user_agent=_USER_AGENT,
+            args=_LAUNCH_ARGS,
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto(account.login_url, wait_until="domcontentloaded")
@@ -247,11 +273,8 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None) -> li
             user_data_dir=str(profile),
             headless=account.headless,
             executable_path=account.executable_path or None,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            ],
+            user_agent=_USER_AGENT,
+            args=_LAUNCH_ARGS,
         )
 
         def on_response(resp):  # noqa: ANN001
@@ -274,7 +297,7 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None) -> li
 
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.on("response", on_response)
-        page.goto(account.trips_url, wait_until="domcontentloaded", timeout=60000)
+        _goto_with_retry(page, account.trips_url)
         try:
             page.wait_for_load_state("networkidle", timeout=30000)
         except Exception:

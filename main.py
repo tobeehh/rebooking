@@ -85,6 +85,8 @@ def cmd_account(args: argparse.Namespace) -> int:
     from rebooking.account import fetch_account_bookings, login
 
     config = Config.load(args.config)
+    if getattr(args, "headed", False):
+        config.account.headless = False
 
     if args.action == "login":
         login(config.account)
@@ -93,7 +95,15 @@ def cmd_account(args: argparse.Namespace) -> int:
     # action == "import"
     capture = str(Path(config.data_dir) / "capture") if args.capture else None
     print("Lese Buchungen aus deinem Hotels.com-Konto ...")
-    found = fetch_account_bookings(config.account, capture_dir=capture)
+    try:
+        found = fetch_account_bookings(config.account, capture_dir=capture)
+    except Exception as exc:  # noqa: BLE001
+        print(f"\nFehler beim Laden der Reisen-Seite: {exc}\n")
+        print("Versuche es mit sichtbarem Browser (oft robuster):")
+        print("    python main.py account import --headed")
+        print("Falls die Seite lädt, aber nichts erkannt wird:")
+        print("    python main.py account import --headed --capture")
+        return 1
 
     if not found:
         print(
@@ -174,6 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="login: einmaliger Browser-Login | import: Buchungen einlesen")
     p_acc.add_argument("--capture", action="store_true", help="Rohantworten zum Justieren speichern")
     p_acc.add_argument("--merge", action="store_true", help="gefundene Buchungen in config.yaml übernehmen")
+    p_acc.add_argument("--headed", action="store_true", help="Import im sichtbaren Browser (robuster gegen Bot-Schutz)")
     p_acc.set_defaults(func=cmd_account)
 
     p_web = sub.add_parser("web", help="Web-UI starten")
