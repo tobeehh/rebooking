@@ -249,7 +249,7 @@ def login(account) -> None:
     print("Session gespeichert in", profile)
 
 
-def fetch_account_bookings(account, capture_dir: str | Path | None = None) -> list[dict]:
+def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbose: bool = True) -> list[dict]:
     """Lädt „Meine Reisen“ im eingeloggten Kontext und liefert Buchungen.
 
     Fängt GraphQL-/JSON-Antworten ab und parst sie. Optional werden die
@@ -303,6 +303,9 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None) -> li
             except Exception:
                 pass  # nicht-JSON oder abgebrochene Antworten ignorieren
 
+        if verbose:
+            print(f"  Modus: {'CDP (eigener Chrome)' if use_cdp else 'eigener Browser'} · Ziel: {account.trips_url}")
+
         # Bei CDP eine eigene Seite öffnen (bestehende Tabs des Nutzers nicht stören).
         page = ctx.new_page() if use_cdp else (ctx.pages[0] if ctx.pages else ctx.new_page())
         page.on("response", on_response)
@@ -312,18 +315,67 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None) -> li
         except Exception:
             pass
         page.wait_for_timeout(4000)
+        # Etwas scrollen, damit nachladende Inhalte (Lazy-Load) erscheinen.
+        try:
+            for _ in range(3):
+                page.mouse.wheel(0, 2000)
+                page.wait_for_timeout(1000)
+        except Exception:
+            pass
+
+        final_url = page.url
+        final_title = ""
+        try:
+            final_title = page.title()
+        except Exception:
+            pass
+
+        # Zweite Quelle: im HTML eingebettete JSON-Blobs (z.B. Next.js __NEXT_DATA__).
+        embedded = _collect_embedded_json(page, cap_path)
 
         if use_cdp:
             page.close()          # nur unseren Tab schließen, Chrome des Nutzers bleibt offen
         else:
             ctx.close()
 
+    if verbose:
+        print(f"  Geladen: {final_url}")
+        if final_title:
+            print(f"  Titel: {final_title}")
+        print(f"  Abgefangene JSON-Antworten: {len(captured)} · eingebettete JSON-Blobs: {len(embedded)}")
+        low = (final_url + " " + final_title).lower()
+        if any(w in low for w in ("sign in", "log in", "anmelden", "login")):
+            print("  ⚠ Sieht nach Login-Seite aus – bist du im geöffneten Chrome eingeloggt?")
+
     bookings: list[dict] = []
     seen: set[tuple] = set()
-    for body in captured:
+    for body in captured + embedded:
         for b in parse_trips(body):
             key = (b["name"], b["checkin"], b["checkout"])
             if key not in seen:
                 seen.add(key)
                 bookings.append(b)
     return bookings
+
+
+def _collect_embedded_json(page, cap_path=None) -> list[Any]:
+    """Extrahiert JSON aus <script type=application/json>-Blöcken (SSR-Daten)."""
+    out: list[Any] = []
+    try:
+        handles = page.query_selector_all('script[type="application/json"]')
+    except Exception:
+        return out
+    for i, el in enumerate(handles):
+        try:
+            txt = el.text_content() or ""
+            if not txt.strip():
+                continue
+            data = json.loads(txt)
+            out.append(data)
+            if cap_path:
+                (cap_path / f"embedded_{i:02d}.json").write_text(
+                    json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+        except Exception:
+            continue
+    return out
