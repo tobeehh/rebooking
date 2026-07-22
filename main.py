@@ -197,25 +197,75 @@ def cmd_chrome(args: argparse.Namespace) -> int:
         print("Chrome nicht gefunden. Bitte Pfad angeben: python main.py chrome --chrome-path '/pfad/zu/chrome'")
         return 1
 
-    profile = Path(config.data_dir) / "chrome_profile"
+    import json as _json
+    import time
+    import urllib.request
+
+    # Läuft der Debug-Port evtl. schon (aus einem früheren Start)?
+    def _port_up() -> dict | None:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{args.port}/json/version", timeout=2) as r:
+                return _json.loads(r.read().decode())
+        except Exception:
+            return None
+
+    if _port_up():
+        print(f"✅ Debug-Chrome läuft bereits auf http://127.0.0.1:{args.port} – nichts zu tun.")
+        _print_cdp_next_steps(args.port)
+        return 0
+
+    profile = (Path(config.data_dir) / "chrome_profile").resolve()  # absoluter Pfad!
     profile.mkdir(parents=True, exist_ok=True)
     cmd = [
         chrome,
         f"--remote-debugging-port={args.port}",
         f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
         "https://www.hotels.com/trips",
     ]
     print("Starte deinen Chrome mit Debug-Port …")
     print("  " + " ".join(cmd))
-    print(
-        f"\n>>> Logge dich im geöffneten Chrome bei Hotels.com ein (bleibt in diesem Profil gespeichert).\n"
-        f">>> Lass dieses Fenster offen und setze in config.yaml:\n"
-        f"      account:\n        cdp_url: \"http://127.0.0.1:{args.port}\"\n"
-        f"      scraper:\n        cdp_url: \"http://127.0.0.1:{args.port}\"\n"
-        f">>> Dann in einem zweiten Terminal:  python main.py account import\n"
-    )
     subprocess.Popen(cmd)
-    return 0
+
+    # Warten und prüfen, ob der Debug-Port wirklich offen ist.
+    print("\nPrüfe, ob der Debug-Port geöffnet wurde …", end="", flush=True)
+    info = None
+    for _ in range(15):
+        time.sleep(1)
+        print(".", end="", flush=True)
+        info = _port_up()
+        if info:
+            break
+    print()
+
+    if info:
+        print(f"✅ Debug-Chrome läuft auf http://127.0.0.1:{args.port}  ({info.get('Browser', '')})")
+        _print_cdp_next_steps(args.port)
+        return 0
+
+    print(
+        "\n❌ Debug-Port ist NICHT offen. Fast immer die Ursache: Chrome lief schon,\n"
+        "   und macOS hat den Befehl an die bestehende Instanz weitergereicht\n"
+        "   (Meldung 'Wird in einer aktuellen Browsersitzung geöffnet').\n\n"
+        "So beheben:\n"
+        "  1) Chrome KOMPLETT beenden (Cmd+Q im Chrome-Fenster, nicht nur Fenster schließen).\n"
+        "  2) Danach erneut:  python main.py chrome\n\n"
+        "Alternativ ohne dein Haupt-Chrome zu schließen: dieser Befehl nutzt bereits ein\n"
+        "getrenntes Profil (data/chrome_profile) – das öffnet normalerweise eine EIGENE\n"
+        "Instanz. Klappt es trotzdem nicht, hilft nur Schritt 1."
+    )
+    return 1
+
+
+def _print_cdp_next_steps(port: int) -> None:
+    print(
+        f"\n>>> Logge dich im geöffneten Chrome bei Hotels.com ein (Profil bleibt gespeichert).\n"
+        f">>> Setze in config.yaml (Einrückung beachten!):\n"
+        f"      account:\n        cdp_url: \"http://127.0.0.1:{port}\"\n"
+        f"      scraper:\n        cdp_url: \"http://127.0.0.1:{port}\"\n"
+        f">>> Dann (venv aktiv):  python main.py account import\n"
+    )
 
 
 def cmd_web(args: argparse.Namespace) -> int:
