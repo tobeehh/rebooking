@@ -33,6 +33,48 @@ _DEFAULT_SELECTORS = [
     'span[aria-hidden="true"].uitk-text',
 ]
 
+# Die Zimmerliste DIESER Unterkunft. Alles außerhalb davon sind Vorschläge für
+# ANDERE Hotels – deren Preise dürfen nie in den Vergleich einfließen.
+_ROOM_LIST_SELECTOR = '[data-stid="section-room-list"]'
+_OFFER_PRICE_SELECTOR = '[data-stid="price-summary"]'
+
+# Ein Angebotsblock nennt drei Zahlen; nur die mittlere ist der Vergleichswert:
+#   "Der vorherige Preis war 759 €."      <- durchgestrichen, irrelevant
+#   "Der aktuelle Preis beträgt 391 €."   <- Gesamtpreis für den Aufenthalt
+#   "195 € pro Nacht"                     <- abgeleitet, NICHT vergleichbar
+# min() über alle Zahlen würde also systematisch den Nachtpreis wählen und
+# damit dauerhaft falsche „günstiger“-Meldungen erzeugen.
+_CURRENT_PRICE_RES = (
+    re.compile(r"aktuelle[rn]?\s+Preis\s+betr[äa]gt\s*([0-9][0-9.,\s]*[0-9])\s*(?:€|EUR)", re.I),
+    re.compile(r"\bPreis\s+betr[äa]gt\s*([0-9][0-9.,\s]*[0-9])\s*(?:€|EUR)", re.I),
+    re.compile(r"current\s+price\s+is\s*(?:€|EUR|\$|£)?\s*([0-9][0-9.,\s]*[0-9])", re.I),
+    re.compile(r"\bprice\s+is\s*(?:€|EUR|\$|£)?\s*([0-9][0-9.,\s]*[0-9])", re.I),
+)
+_PREVIOUS_MARKERS = ("vorherige", "vorheriger", "alte preis", "alter preis",
+                     "previous price", "old price", "standardpreis")
+_PERNIGHT_MARKERS = ("pro nacht", "je nacht", "per night", "/nacht", "/night")
+
+
+def extract_current_total(text: str) -> float | None:
+    """Liest den aktuellen Gesamtpreis eines Angebotsblocks.
+
+    Durchgestrichene Vorher-Preise und Nacht-Preise werden bewusst ignoriert –
+    beide sind mit dem bezahlten Gesamtpreis nicht vergleichbar.
+    """
+    if not text:
+        return None
+    # Anker ist die Formulierung selbst ("… Preis beträgt X €"), nicht die Zeile:
+    # je nach Markup liefert inner_text() den ganzen Block als eine Zeile, und
+    # ein zeilenweiser Filter würde ihn dann komplett verwerfen.
+    for rx in _CURRENT_PRICE_RES:
+        for m in rx.finditer(text):
+            # "war 759 €" / "195 € pro Nacht" matchen hier gar nicht erst –
+            # beide stehen nie hinter "Preis beträgt".
+            val = _to_float(m.group(1))
+            if val is not None and 5 <= val <= 100000:
+                return val
+    return None
+
 # Erkennt Beträge wie "1.234,56 €", "€ 1.234", "1,234.56", "123 EUR"
 _PRICE_RE = re.compile(
     r"(?:€|EUR|\$|£|CHF)\s?([0-9][0-9\.\,   ]{1,12}[0-9])"
@@ -108,6 +150,49 @@ def extract_prices_from_text(text: str) -> list[float]:
     return prices
 
 
+# Ist die Unterkunft für den Zeitraum ausgebucht, zeigt Hotels.com trotzdem
+# Preise – die gehören dann aber zu VORGESCHLAGENEN ANDEREN Hotels. Wer das
+# nicht erkennt, vergleicht den bezahlten Preis mit dem einer fremden Unterkunft
+# und meldet fälschlich „günstiger“ für ein nicht buchbares Zimmer.
+_SOLDOUT_MARKERS = (
+    "bei uns ausgebucht", "ausgebucht", "ausverkauft",
+    "wir sind ausgebucht", "sold out", "we are sold out",
+    "keine verfügbarkeit", "no availability", "not available for these dates",
+)
+# Überschrift der Alternativvorschläge – zusätzlicher Beleg.
+_ALTERNATIVES_MARKERS = ("ähnliche unterkünfte", "similar properties", "ähnliche hotels")
+
+
+# Ohne Login zeigt Hotels.com die Listenpreise statt der Mitgliederpreise –
+# gemessen 759 € statt 391 € für dieselbe Buchung. Eine abgelaufene Session
+# würde den Monitor also lautlos wertlos machen: er meldete nie mehr eine
+# Ersparnis, ohne dass ein Fehler sichtbar wird.
+_SIGNEDOUT_MARKERS = (
+    "anmelden",
+    "sichere dir sofortrabatte",
+    "entdecke hotels.com rewards",
+    "sign in",
+    "unlock instant savings",
+    "members get",
+)
+
+
+def is_signed_out(page_text: str) -> bool:
+    """Erkennt, ob die Seite abgemeldet ausgeliefert wurde."""
+    low = (page_text or "").lower()
+    return any(m in low for m in _SIGNEDOUT_MARKERS)
+
+
+def is_sold_out(page_text: str) -> bool:
+    """Erkennt, ob die Unterkunft für den Zeitraum nicht buchbar ist."""
+    low = (page_text or "").lower()
+    if any(m in low for m in _SOLDOUT_MARKERS):
+        return True
+    # Alternativen allein genügen nicht – nur zusammen mit fehlendem Preis
+    # wäre das ein Indiz; hier bewusst konservativ.
+    return False
+
+
 def _dismiss_cookie_banner(page) -> None:
     for sel in (
         'button:has-text("Accept")',
@@ -125,24 +210,47 @@ def _dismiss_cookie_banner(page) -> None:
             continue
 
 
+def _extract_room_offer_totals(page) -> list[float]:
+    """Gesamtpreise der Zimmerangebote DIESER Unterkunft.
+
+    Bewusst eng auf die Zimmerliste begrenzt: Hotels.com blendet auf derselben
+    Seite Preise ähnlicher Hotels ein, die nicht zur Buchung gehören.
+    """
+    totals: list[float] = []
+    try:
+        liste = page.query_selector(_ROOM_LIST_SELECTOR)
+        if not liste:
+            return []
+        for el in liste.query_selector_all(_OFFER_PRICE_SELECTOR):
+            wert = extract_current_total((el.inner_text() or "").strip())
+            if wert is not None:
+                totals.append(wert)
+    except Exception:
+        return []
+    return totals
+
+
 def _extract_prices(page, scraper: ScraperConfig) -> list[float]:
+    """Vergleichbare Gesamtpreise der Buchung.
+
+    Ohne eigene Selektoren wird AUSSCHLIESSLICH die Zimmerliste ausgewertet.
+    Der frühere Rückfall auf den gesamten Seitentext ist entfallen: er sammelte
+    Nachtpreise und Preise vorgeschlagener Fremdhotels ein und lieferte damit
+    still falsche Vergleichswerte. Findet sich nichts, ist ein Fehler das
+    ehrlichere Ergebnis – dann muss der Selektor nachgezogen werden.
+    """
+    if not scraper.price_selectors:
+        return _extract_room_offer_totals(page)
+
+    # Ausdrücklich konfigurierte Selektoren: Nutzerentscheidung, wie gehabt.
     prices: list[float] = []
-    selectors = scraper.price_selectors or _DEFAULT_SELECTORS
-    for sel in selectors:
+    for sel in scraper.price_selectors:
         try:
             for el in page.query_selector_all(sel):
                 txt = (el.inner_text() or "").strip()
                 prices.extend(extract_prices_from_text(txt))
         except Exception:
             continue
-
-    if not prices:
-        # Fallback: gesamter sichtbarer Text.
-        try:
-            body = page.inner_text("body")
-            prices.extend(extract_prices_from_text(body))
-        except Exception:
-            pass
     return prices
 
 
@@ -184,19 +292,65 @@ def fetch_price(booking: Booking, scraper: ScraperConfig) -> PriceResult:
                 )
                 page = context.new_page()
 
-            page.goto(url, wait_until="domcontentloaded", timeout=scraper.timeout_ms)
-            _dismiss_cookie_banner(page)
             try:
-                page.wait_for_load_state("networkidle", timeout=scraper.timeout_ms)
-            except Exception:
-                pass  # networkidle wird bei Tracking-Skripten oft nie erreicht.
-            page.wait_for_timeout(2500)
+                page.goto(url, wait_until="domcontentloaded", timeout=scraper.timeout_ms)
+                _dismiss_cookie_banner(page)
+            # Gezielt auf die Zimmerliste warten statt blind auf networkidle:
+            # letzteres wird durch Tracking-Skripte oft nie erreicht, und ohne
+            # gerenderte Liste liefert die Extraktion grundlos nichts.
+                try:
+                    page.wait_for_selector(_ROOM_LIST_SELECTOR,
+                                           timeout=min(30000, scraper.timeout_ms))
+                except Exception:
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=scraper.timeout_ms)
+                    except Exception:
+                        pass
+                page.wait_for_timeout(2500)
 
-            prices = _extract_prices(page, scraper)
-            if use_cdp:
-                page.close()      # nur unseren Tab schließen, Chrome des Nutzers bleibt offen
-            else:
-                browser.close()
+                # Zuerst Verfügbarkeit prüfen: bei „ausgebucht" stehen auf der
+                # Seite ausschließlich Preise anderer, vorgeschlagener Hotels.
+                try:
+                    seitentext = page.inner_text("body")
+                except Exception:
+                    seitentext = ""
+                ausgebucht = is_sold_out(seitentext)
+                abgemeldet = scraper.require_login and is_signed_out(seitentext)
+
+                prices = [] if (ausgebucht or abgemeldet) else _extract_prices(page, scraper)
+            finally:
+                # Tab immer schließen – auch im Fehlerfall. Sonst sammeln sich im
+                # Chrome des Nutzers mit jedem Lauf verwaiste Tabs an.
+                try:
+                    if use_cdp:
+                        page.close()
+                    else:
+                        browser.close()
+                except Exception:
+                    pass
+
+        if abgemeldet:
+            return PriceResult(
+                booking=booking,
+                checked_at=now,
+                current_price=None,
+                currency=booking.currency,
+                ok=False,
+                error="Nicht eingeloggt – es kämen nur Listenpreise statt Mitgliederpreisen. "
+                      "Session erneuern (siehe 'account login').",
+                source_url=url,
+            )
+
+        if ausgebucht:
+            return PriceResult(
+                booking=booking,
+                checked_at=now,
+                current_price=None,
+                currency=booking.currency,
+                ok=False,
+                error="Unterkunft für diesen Zeitraum ausgebucht – kein vergleichbarer Preis.",
+                source_url=url,
+            )
 
         if not prices:
             return PriceResult(
