@@ -1,0 +1,44 @@
+# Synology Container Manager -> Projekt -> "docker-compose.yml hochladen"
+#
+# Variante zum SELBST BAUEN (statt aus der Registry zu ziehen).
+# Auf der NAS bauen dauert einige Minuten und braucht ~5 GB Platz.
+#
+# Vorher auf der NAS anlegen:
+#   /volume1/docker/rebooking/data/config.yaml   (aus config.docker.yaml)
+#   /volume1/docker/rebooking/.env               (VNC_PASSWORD=…)
+#
+# In der config.yaml müssen stehen:
+#   data_dir: /data
+#   account:  { cdp_url: "http://127.0.0.1:9222" }
+#   scraper:  { cdp_url: "http://127.0.0.1:9222" }
+
+services:
+  rebooking:
+    build: .
+    image: rebooking:local
+    container_name: rebooking
+    restart: unless-stopped
+
+    # Chromium braucht mehr als die Docker-Standard-64MB, sonst stürzt er ab.
+    shm_size: "1gb"
+
+    ports:
+      # noVNC für den einmaligen 2FA-Login.
+      # ACHTUNG: Wer diese Oberfläche erreicht, bedient dein eingeloggtes
+      # Hotels.com-Konto. Nur im LAN freigeben, NIEMALS ins Internet
+      # portforwarden, und VNC_PASSWORD setzen.
+      - "6080:6080"
+
+    volumes:
+      - /volume1/docker/rebooking/data:/data
+
+    environment:
+      TZ: Europe/Berlin
+      # Zwingend setzen – sonst ist die VNC-Oberfläche ungeschützt.
+      VNC_PASSWORD: "${VNC_PASSWORD:?VNC_PASSWORD muss gesetzt sein}"
+      # Täglich prüfen. --once-per-day verhindert Doppelläufe nach Neustarts.
+      CHECK_INTERVAL_SECONDS: "86400"
+      CHROME_LANG: "de-DE"
+
+    # Chromium ist speicherhungrig; auf kleinen NAS-Modellen ggf. anheben.
+    mem_limit: 2g

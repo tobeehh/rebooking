@@ -1,0 +1,22 @@
+# Ohne diese Datei landen ~600 MB im Build-Kontext – vor allem aber die
+# lokale Browser-Session. Die gehört nicht ins Image: sie ist ein Zugang zu
+# deinem Hotels.com-Konto, und die macOS-Cookies sind ohnehin über die
+# Keychain verschlüsselt und unter Linux wertlos.
+data/
+.venv/
+venv/
+.env
+
+.git/
+.github/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.DS_Store
+
+tests/
+README.md
+config.yaml
+config.example.yaml
+config.docker.yaml
+docker-compose.yml

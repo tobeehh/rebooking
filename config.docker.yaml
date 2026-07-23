@@ -1,0 +1,42 @@
+# Konfiguration für den Container (nach /volume1/docker/rebooking/data/config.yaml).
+#
+# Unterschiede zur lokalen config.yaml:
+#   * data_dir zeigt auf das gemountete Volume
+#   * beide cdp_url zeigen auf den Chromium IM Container
+#   * require_login bleibt an: ohne Session gäbe es nur Listenpreise
+
+currency: EUR
+data_dir: /data
+
+notifications:
+  channel: email          # console | email | telegram
+  min_drop_absolute: 5.0
+  min_drop_percent: 2.0
+  email:
+    smtp_host: smtp.gmail.com
+    smtp_port: 587
+    username: ${SMTP_USERNAME}     # als Umgebungsvariable im Container setzen
+    password: ${SMTP_PASSWORD}     # bei Gmail: App-Passwort
+    from_addr: ${SMTP_USERNAME}
+    to_addr: dein.name@example.com
+
+account:
+  profile_dir: /data/chrome_profile
+  trips_url: "https://www.hotels.com/trips"
+  login_url: "https://www.hotels.com/login"
+  locale: de-DE
+  # Der Container startet Chromium selbst mit diesem Debug-Port.
+  cdp_url: "http://127.0.0.1:9222"
+  only_if_free_cancellation: true
+
+scraper:
+  cdp_url: "http://127.0.0.1:9222"
+  timeout_ms: 60000
+  locale: de-DE
+  override_url_dates: true
+  delay_between_seconds: 8
+  # Abgemeldete Seiten als Fehler melden statt Listenpreise zu vergleichen.
+  require_login: true
+  price_selectors: []
+
+bookings: []
