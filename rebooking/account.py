@@ -378,6 +378,43 @@ def _looks_interesting(url: str) -> bool:
 
 
 _TRIPID_RE = re.compile(r"egti-[A-Za-z0-9]{2,4}-[A-Za-z0-9]{2,4}-[A-Za-z0-9]{2,6}")
+# "Reiseplan: 72077068384394" (DE) / "Itinerary: 72077068384394" (EN)
+_TRIPID_NUM_RE = re.compile(r"(?:Reiseplan|Itinerary)\s*:?\s*(\d{8,})", re.IGNORECASE)
+# Detail-Link: /trips/<tripViewId>/details/<encodedTripItemId>
+_DETAIL_PARTS_RE = re.compile(r"/trips/([^/]+)/details/([^/?#]+)")
+
+
+# Echte Hotelseite: /ho<propertyId>/<slug>/ – die propertyId hat NICHTS mit der
+# Zahl im Bildpfad zu tun (die führt zu 404). Sie steht nur als Link im DOM der
+# Buchungs-Detailseite.
+_PROPERTY_HREF_RE = re.compile(r"^https?://[^/]*hotels\.com/ho(\d{4,})/", re.IGNORECASE)
+
+
+def _extract_property_url(page) -> str:
+    """Liest den Link zur Hotelseite aus der Buchungs-Detailseite."""
+    try:
+        hrefs = page.eval_on_selector_all("a[href]", "els => els.map(e => e.href)")
+    except Exception:
+        return ""
+    for h in hrefs or []:
+        if _PROPERTY_HREF_RE.match(h or ""):
+            return h.split("?")[0]
+    return ""
+
+
+def _servicing_url(detail_url: str, trip_num: str, locale: str = "") -> str | None:
+    """Baut die URL der Buchungsverwaltung, wo die Stornobedingungen stehen.
+
+    Alle drei Bestandteile stecken bereits in den Kartendaten:
+    tripViewId und encodedTripItemId im Detail-Link, die tripId als
+    „Reiseplan“-Nummer. Diese Seite wird ausschließlich GELESEN.
+    """
+    m = _DETAIL_PARTS_RE.search(detail_url or "")
+    if not m or not trip_num:
+        return None
+    url = ("https://de.hotels.com/booking-servicing/lodging"
+           f"?tripViewId={m.group(1)}&encodedTripItemId={m.group(2)}&tripId={trip_num}")
+    return _localized_url(url, locale)
 
 
 def _extract_trip_ids(captured: list[Any]) -> list[str]:
@@ -426,10 +463,12 @@ _MONTHS = {
     # Englisch (3-Buchstaben)
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
-    # Deutsch (voll + Kurzformen)
-    "januar": 1, "februar": 2, "märz": 3, "maerz": 3, "mär": 3, "april": 4,
-    "mai": 5, "juni": 6, "juli": 7, "august": 8, "september": 9,
-    "oktober": 10, "okt": 10, "november": 11, "dezember": 12, "dez": 12,
+    # Deutsch (voll + Kurzformen). Die deutsche Seite kürzt anders ab als die
+    # englische – u.a. "Sept." (statt "Sep"), "Mrz.", "Okt.", "Dez.".
+    "januar": 1, "februar": 2, "märz": 3, "maerz": 3, "mär": 3, "mrz": 3,
+    "april": 4, "mai": 5, "juni": 6, "juli": 7, "august": 8,
+    "september": 9, "sept": 9, "oktober": 10, "okt": 10,
+    "november": 11, "dezember": 12, "dez": 12,
 }
 # EN: "Jul 20 at 2:00pm - Jul 22 at 10:00am"
 _RANGE_EN = re.compile(
@@ -591,8 +630,86 @@ def _find_cancellation(responses: list[Any]) -> dict:
     return {"free": free, "text": detail}
 
 
+# Die Stornobedingungen stehen NUR im gerenderten HTML der Seite
+# /booking-servicing/lodging – nicht in den abgefangenen JSON-Antworten.
+# Maßgeblich ist die Zeile zur aktuell geltenden Phase:
+#   "Vollständige Rückerstattung ab heute bis zum 26. Juli."
+#   "Keine Rückerstattung ab heute bis zum Check-in."
+# Die Datumsangabe enthält selbst einen Punkt ("bis zum 26. Juli."), deshalb
+# bis zum Zeilenende lesen statt bis zum ersten Punkt.
+_PHASE_DE = re.compile(r"([^.\n]{3,60}?)\s+ab heute bis\s+([^\n]{1,40})", re.IGNORECASE)
+_PHASE_EN = re.compile(r"([^.\n]{3,60}?)\s+from today until\s+([^\n]{1,40})", re.IGNORECASE)
+# "… wenn du vor dem 26. Juli 2026, 18:00 Uhr (Ortszeit), stornierst."
+_DEADLINE_DE = re.compile(r"vor dem\s+(\d{1,2})\.\s*([A-Za-zäöüÄÖÜ]+)\.?\s+(\d{4})", re.IGNORECASE)
+
+_FULL_WORDS = ("vollständige rückerstattung", "volle rückerstattung", "full refund",
+               "fully refundable", "vollständig erstattbar")
+_NONE_WORDS = ("keine rückerstattung", "nicht erstattbar", "no refund", "non-refundable",
+               "nonrefundable")
+_PART_WORDS = ("teilerstattung", "teilweise rückerstattung", "partial refund")
+
+
+def parse_cancellation_page(text: str) -> dict:
+    """Liest die Stornierbarkeit aus dem Text der Buchungsverwaltungs-Seite.
+
+    Rückgabe: ``free`` True/False/None (unbekannt), ``text`` als Beleg und
+    ``free_until`` (ISO-Datum), bis wann kostenlos storniert werden kann.
+
+    Entscheidend ist die **aktuell geltende** Phase ("ab heute bis …"): eine
+    Buchung, die erst in Zukunft teilerstattbar wird, ist heute noch voll
+    erstattbar – und nur das zählt fürs Umbuchen.
+    """
+    if not text:
+        return {"free": None, "text": "", "free_until": None}
+
+    phase_txt = ""
+    for rx in (_PHASE_DE, _PHASE_EN):
+        m = rx.search(text)
+        if m:
+            phase_txt = m.group(0).strip()
+            break
+
+    quelle = phase_txt or text
+    low = quelle.lower()
+    free: bool | None = None
+    if any(w in low for w in _NONE_WORDS):
+        free = False
+    elif any(w in low for w in _FULL_WORDS):
+        free = True
+    elif any(w in low for w in _PART_WORDS):
+        # Teilerstattung reicht zum kostenlosen Umbuchen nicht.
+        free = False
+
+    # Ohne Phasen-Zeile den zusammenfassenden Satz auswerten.
+    if free is None:
+        low_all = text.lower()
+        if any(w in low_all for w in _NONE_WORDS):
+            free = False
+        elif any(w in low_all for w in _FULL_WORDS):
+            free = True
+
+    free_until = None
+    if free:
+        m = _DEADLINE_DE.search(text)
+        if m:
+            mon = _MONTHS.get(m.group(2).lower())
+            if mon:
+                try:
+                    free_until = date(int(m.group(3)), mon, int(m.group(1))).isoformat()
+                except ValueError:
+                    free_until = None
+
+    return {"free": free, "text": (phase_txt or "")[:160], "free_until": free_until}
+
+
 def _extract_cards(captured: list[Any]) -> list[dict]:
-    """Buchungskarten (TripsUIBookedItemCard): Hotelname, Property-ID, Detail-Link."""
+    """Buchungskarten (TripsUIBookedItemCard): Hotelname, Property-ID, Detail-Link.
+
+    Dieselbe Buchung taucht in mehreren Kartenvarianten auf: eine trägt den
+    Detail-Link und den Reisezeitraum als Fließtext, eine andere Ort und
+    Nächtezahl als Icon-Text. Die Felder werden deshalb über alle Varianten
+    hinweg zusammengeführt – wer nur die erste nimmt, verliert den Rest.
+    """
     cards: dict[str, dict] = {}
     for body in captured:
         for node in _walk(body):
@@ -606,10 +723,24 @@ def _extract_cards(captured: list[Any]) -> list[dict]:
             res = (action.get("resource") or {}) if isinstance(action, dict) else {}
             detail_url = res.get("value", "") if isinstance(res, dict) else ""
             location = ""
+            trip_num = ""
+            dates: tuple[str, str] | None = None
             for sec in node.get("enrichedSecondaries") or []:
+                if not isinstance(sec, dict):
+                    continue
+                text = sec.get("text") or ""
                 g = sec.get("graphic") or {}
-                if isinstance(g, dict) and g.get("description") == "Location":
-                    location = sec.get("text", "")
+                # Icon-ID statt Beschreibung: "place" ist sprachunabhängig,
+                # "Location" heißt auf der deutschen Seite anders.
+                if isinstance(g, dict) and (g.get("id") == "place" or g.get("description") == "Location"):
+                    location = location or text
+                elif text and _TRIPID_NUM_RE.search(text):
+                    # "Reiseplan: 72077068384394" / "Itinerary: 72077068384394"
+                    trip_num = trip_num or _TRIPID_NUM_RE.search(text).group(1)
+                elif text and not dates:
+                    # "Jul 20 at 2:00pm - Jul 22 at 10:00am" bzw.
+                    # "von 20. Juli, 14:00 Uhr bis 22. Juli, 10:00 Uhr"
+                    dates = _parse_date_range(text)
             # Property-Bild-URL enthält oft die Property-ID (letzter Zahlenordner).
             prop_num = ""
             media = node.get("media") or {}
@@ -618,14 +749,21 @@ def _extract_cards(captured: list[Any]) -> list[dict]:
             if mnum:
                 prop_num = mnum.group(1)
             key = pid or name
-            if key not in cards:
-                cards[key] = {
-                    "property_id": pid,
-                    "name": name,
-                    "location": location,
-                    "detail_url": detail_url,
-                    "property_num": prop_num,
-                }
+            cur = cards.setdefault(key, {
+                "property_id": pid,
+                "name": name,
+                "location": "",
+                "detail_url": "",
+                "property_num": "",
+                "trip_num": "",
+                "dates": None,
+            })
+            # Leere Felder aus späteren Varianten nachtragen.
+            cur["location"] = cur["location"] or location
+            cur["detail_url"] = cur["detail_url"] or detail_url
+            cur["property_num"] = cur["property_num"] or prop_num
+            cur["trip_num"] = cur["trip_num"] or trip_num
+            cur["dates"] = cur["dates"] or dates
     return list(cards.values())
 
 
@@ -643,12 +781,112 @@ def _auth_state(captured: list[Any]) -> str | None:
     return None
 
 
-def _goto_with_retry(page, url: str, attempts: int = 3) -> None:
+def _locale_kwargs(account) -> dict:
+    """Locale + Accept-Language für den eigenen Browser.
+
+    Ohne das richtet sich die Sprache nach dem System und die Kontoansicht
+    kommt mal auf Deutsch, mal auf Englisch – die Extraktion wäre nicht
+    reproduzierbar. Im CDP-Modus greift das nicht (dort gilt dein Chrome).
+    """
+    loc = (getattr(account, "locale", "") or "").strip()
+    if not loc:
+        return {}
+    primary = loc.split("-")[0]
+    return {
+        "locale": loc,
+        "extra_http_headers": {"Accept-Language": f"{loc},{primary};q=0.9"},
+    }
+
+
+def _localized_url(url: str, locale: str) -> str:
+    """Hängt ?locale=de_DE an, falls noch keine Sprache in der URL steht.
+
+    Die Domain allein genügt nicht: de.hotels.com liefert ohne den Parameter
+    weiterhin die englische Seite (und teils USD als Währung). Erst der
+    locale-Parameter schaltet die Sprache um – danach behält die Session sie
+    auch auf den Detailseiten bei.
+    """
+    loc = (locale or "").strip().replace("-", "_")
+    if not loc or "locale=" in url:
+        return url
+    return url + ("&" if "?" in url else "?") + f"locale={loc}"
+
+
+# Nur eindeutige „Wegklicken"-Beschriftungen. Ein blankes „Cancel"/„Stornieren"
+# ist bewusst NICHT dabei – das könnte eine Buchung stornieren statt ein Popup
+# zu schließen.
+_DISMISS_PATTERNS = (
+    "schließen", "schliessen", "close", "dismiss",
+    "nicht jetzt", "not now", "später", "maybe later",
+    "nein danke", "no thanks", "no, thanks",
+    "im browser fortfahren", "continue in browser", "weiter im browser",
+    "zur website", "continue to site", "ablehnen",
+)
+
+
+def _dismiss_overlays(page, verbose: bool = False) -> str | None:
+    """Schließt Overlays (App-Hinweis, Cookie-Banner), damit der Lauf
+    unbeaufsichtigt durchläuft.
+
+    Klickt ausschließlich innerhalb eines erkannten Dialogs und nur auf
+    eindeutige Schließen-Beschriftungen; sonst Escape. Findet sich nichts,
+    passiert nichts – die Funktion ist absichtlich geräuschlos.
+    """
+    containers = ('[role="dialog"]', '[aria-modal="true"]', "dialog[open]",
+                  '[data-stid*="sheet"]', '[class*="uitk-sheet"]')
+    # Auf der Buchungsverwaltung wird GRUNDSÄTZLICH nicht geklickt – dort liegt
+    # der Knopf zum Stornieren. Dort nur Escape.
+    nur_escape = "booking-servicing" in (getattr(page, "url", "") or "")
+    try:
+        for sel in containers:
+            loc = page.locator(sel)
+            for i in range(min(loc.count(), 3)):
+                box = loc.nth(i)
+                if not box.is_visible():
+                    continue
+                buttons = box.locator("button, a[role='button']") if not nur_escape else None
+                for j in range(min(buttons.count(), 12) if buttons else 0):
+                    btn = buttons.nth(j)
+                    try:
+                        if not btn.is_visible():
+                            continue
+                        label = ((btn.get_attribute("aria-label") or "")
+                                 + " " + (btn.inner_text() or "")).strip().lower()
+                    except Exception:
+                        continue
+                    if any(pat in label for pat in _DISMISS_PATTERNS):
+                        try:
+                            btn.click(timeout=3000)
+                            page.wait_for_timeout(600)
+                            if verbose:
+                                print(f"    Overlay geschlossen: {label[:50]!r}")
+                            return label[:50]
+                        except Exception:
+                            pass
+                # Dialog sichtbar, aber kein passender Button -> Escape.
+                try:
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(400)
+                    if verbose:
+                        print(f"    Overlay per Escape geschlossen ({sel})")
+                    return "escape"
+                except Exception:
+                    pass
+    except Exception:
+        pass  # Overlay-Behandlung darf den Import nie zum Scheitern bringen
+    return None
+
+
+def _goto_with_retry(page, url: str, attempts: int = 3, verbose: bool = False) -> None:
     """Navigiert mit Wiederholungen (fängt transiente Protokoll-/Netzfehler ab)."""
     last_exc = None
     for i in range(attempts):
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            # App-Hinweis/Cookie-Banner wegklicken – sonst blockiert das Popup
+            # den unbeaufsichtigten Lauf.
+            page.wait_for_timeout(1200)
+            _dismiss_overlays(page, verbose=verbose)
             return
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
@@ -671,9 +909,10 @@ def login(account) -> None:
             executable_path=account.executable_path or None,
             user_agent=_USER_AGENT,
             args=_LAUNCH_ARGS,
+            **_locale_kwargs(account),
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        page.goto(account.login_url, wait_until="domcontentloaded")
+        _goto_with_retry(page, _localized_url(account.login_url, account.locale), verbose=True)
         print(
             "\n>>> Bitte im geöffneten Browser einloggen (inkl. 2FA).\n"
             ">>> Wenn du 'Meine Reisen' sehen kannst, hier ENTER drücken."
@@ -684,6 +923,58 @@ def login(account) -> None:
             page.wait_for_timeout(120_000)
         ctx.close()
     print("Session gespeichert in", profile)
+
+
+def session_status(account) -> dict:
+    """Prüft, ob die gespeicherte Session noch eingeloggt ist.
+
+    Nötig, weil eine abgelaufene Session sonst unbemerkt bleibt: Hotels.com
+    liefert dann klaglos die Listenpreise statt der Mitgliederpreise.
+    """
+    from playwright.sync_api import sync_playwright
+
+    from .scraper import is_signed_out
+
+    use_cdp = bool(account.cdp_url)
+    ergebnis = {"logged_in": False, "name": "", "url": "", "error": ""}
+    try:
+        with sync_playwright() as p:
+            if use_cdp:
+                browser = p.chromium.connect_over_cdp(account.cdp_url)
+                ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = ctx.new_page()
+            else:
+                ctx = p.chromium.launch_persistent_context(
+                    user_data_dir=str(Path(account.profile_dir)),
+                    headless=account.headless,
+                    executable_path=account.executable_path or None,
+                    user_agent=_USER_AGENT,
+                    args=_LAUNCH_ARGS,
+                    **_locale_kwargs(account),
+                )
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            try:
+                _goto_with_retry(page, _localized_url(account.trips_url, account.locale))
+                page.wait_for_timeout(5000)
+                text = page.inner_text("body")
+                ergebnis["url"] = page.url
+                ergebnis["logged_in"] = not is_signed_out(text)
+                # Der Kontoname steht direkt hinter „Meine Reisen“ im Kopfbereich.
+                zeilen = [z.strip() for z in text.splitlines() if z.strip()]
+                for i, z in enumerate(zeilen[:20]):
+                    if z.lower() in ("meine reisen", "my trips") and i + 1 < len(zeilen):
+                        kandidat = zeilen[i + 1]
+                        if kandidat.lower() not in ("anmelden", "sign in"):
+                            ergebnis["name"] = kandidat
+                        break
+            finally:
+                try:
+                    page.close() if use_cdp else ctx.close()
+                except Exception:
+                    pass
+    except Exception as exc:  # noqa: BLE001
+        ergebnis["error"] = f"{type(exc).__name__}: {exc}"
+    return ergebnis
 
 
 def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbose: bool = True) -> list[dict]:
@@ -726,6 +1017,7 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
                 executable_path=account.executable_path or None,
                 user_agent=_USER_AGENT,
                 args=_LAUNCH_ARGS,
+                **_locale_kwargs(account),
             )
 
         def on_response(resp):  # noqa: ANN001
@@ -752,7 +1044,9 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
         # Bei CDP eine eigene Seite öffnen (bestehende Tabs des Nutzers nicht stören).
         page = ctx.new_page() if use_cdp else (ctx.pages[0] if ctx.pages else ctx.new_page())
         page.on("response", on_response)
-        _goto_with_retry(page, account.trips_url)
+        # Sprache über die URL erzwingen: im CDP-Modus ist das der EINZIGE Hebel,
+        # weil dort weder locale noch Accept-Language gesetzt werden können.
+        _goto_with_retry(page, _localized_url(account.trips_url, account.locale), verbose=verbose)
         try:
             page.wait_for_load_state("networkidle", timeout=30000)
         except Exception:
@@ -772,7 +1066,8 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
             print(f"  Gefundene Trip-IDs: {len(trip_ids)} – lade Detailseiten …")
         for tid in trip_ids[:25]:
             try:
-                _goto_with_retry(page, account.trip_detail_url_template.format(id=tid))
+                _goto_with_retry(page, _localized_url(
+                    account.trip_detail_url_template.format(id=tid), account.locale))
                 try:
                     page.wait_for_load_state("networkidle", timeout=20000)
                 except Exception:
@@ -791,18 +1086,21 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
             if not card.get("detail_url"):
                 continue
             start = len(captured)
+            prop_url = ""
             try:
-                _goto_with_retry(page, card["detail_url"])
+                _goto_with_retry(page, _localized_url(card["detail_url"], account.locale))
                 try:
                     page.wait_for_load_state("networkidle", timeout=20000)
                 except Exception:
                     pass
                 page.wait_for_timeout(2500)
+                # Link zur echten Hotelseite einsammeln, solange wir dort sind.
+                prop_url = _extract_property_url(page)
                 # Zusätzlich der „Beleg/Details"-Unterseite folgen (Storno-Bedingungen).
                 for sub in _extract_detail_urls(captured[start:])[:3]:
                     if sub != card["detail_url"]:
                         try:
-                            _goto_with_retry(page, sub)
+                            _goto_with_retry(page, _localized_url(sub, account.locale))
                             page.wait_for_timeout(2000)
                         except Exception:
                             pass
@@ -811,8 +1109,29 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
 
             page_slice = captured[start:]
             amount, cur = _find_total_price(page_slice)
-            dates = _find_date_range(page_slice) or _find_date_range(captured)
-            cancel = _find_cancellation(page_slice)
+            # Das Datum aus der Karte ist eindeutig dieser Buchung zugeordnet;
+            # die Textsuche über den Slice kann Fremdtreffer liefern.
+            # KEIN Rückgriff auf alle Antworten: der lieferte immer den Zeitraum
+            # der ERSTEN Buchung und damit still ein falsches Datum.
+            dates = card.get("dates") or _find_date_range(page_slice)
+
+            # Stornobedingungen: nur auf der Verwaltungsseite zu finden, und dort
+            # ausschließlich im HTML (nicht in den JSON-Antworten). Die Seite wird
+            # NUR gelesen – es wird dort nichts angeklickt.
+            cancel = {"free": None, "text": "", "free_until": None}
+            svc = _servicing_url(card["detail_url"], card.get("trip_num", ""), account.locale)
+            if svc:
+                try:
+                    _goto_with_retry(page, svc)
+                    page.wait_for_timeout(2500)
+                    cancel = parse_cancellation_page(page.inner_text("body"))
+                except Exception:
+                    pass
+            if cancel.get("free") is None:
+                # Rückfall auf die Textsuche in den JSON-Antworten.
+                alt = _find_cancellation(page_slice)
+                if alt.get("free") is not None:
+                    cancel = {**alt, "free_until": None}
             if verbose and (amount is None or not dates):
                 # Zeigt echte Kandidaten-Texte (Datum/Storno), um Muster zu justieren.
                 samples: list[str] = []
@@ -828,7 +1147,10 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
                 for s in samples:
                     print(f"        text: {s[:75]}")
             checkin, checkout = (dates or ("", ""))
-            url = f"https://www.hotels.com/ho{card['property_num']}/" if card.get("property_num") else ""
+            # NUR der echte Link aus dem DOM. Die früher aus dem Bildpfad geratene
+            # ID ("ho42077782") lieferte durchweg 404 – lieber leer als falsch.
+            url = prop_url
+            vergangen = bool(checkout) and checkout < date.today().isoformat()
             bookings.append({
                 "name": card["name"],
                 "url": url,
@@ -840,9 +1162,17 @@ def fetch_account_bookings(account, capture_dir: str | Path | None = None, verbo
                 "paid_on": _find_paid_on(page_slice),
                 "free_cancellation": cancel.get("free"),
                 "cancellation_text": cancel.get("text", ""),
+                "free_until": cancel.get("free_until"),
+                "past": vergangen,
             })
             if verbose:
                 fc = {True: "kostenlos stornierbar", False: "NICHT erstattbar", None: "Storno unbekannt"}[cancel.get("free")]
+                if cancel.get("free_until"):
+                    fc += f" bis {cancel['free_until']}"
+                if vergangen:
+                    fc += " · VERGANGEN"
+                if not url:
+                    fc += " · KEINE HOTEL-URL"
                 print(f"    • {card['name']}: {checkin}→{checkout}  {amount} {cur}  [{fc}]")
 
         auth = _auth_state(captured)

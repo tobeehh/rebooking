@@ -37,6 +37,8 @@ account:
   trips_url: "https://www.hotels.com/trips"
   login_url: "https://www.hotels.com/login"
   headless: true                          # beim Import; Login ist immer sichtbar
+  locale: de-DE                           # Sprache der Kontoansicht (eigener Browser).
+                                           # Im CDP-Modus gilt die Sprache deines Chrome.
   # executable_path: ""                    # optional: Pfad zu vorhandenem Chrome
   # cdp_url: "http://127.0.0.1:9222"       # empfohlen bei Bot-Schutz: an eigenen
                                            # Chrome anbinden (siehe README, 'chrome'-Befehl)

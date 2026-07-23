@@ -53,6 +53,10 @@ class ScraperConfig:
     # Optional: an laufenden Chrome per CDP anbinden (z.B. http://127.0.0.1:9222)
     # statt einen eigenen Browser zu starten – robuster gegen Bot-Schutz.
     cdp_url: str = ""
+    # Abgemeldete Seiten als Fehler behandeln. Ohne Login liefert Hotels.com
+    # Listen- statt Mitgliederpreise (gemessen: 759 € statt 391 €) – der
+    # Vergleich wäre dann wertlos, ohne dass es auffällt.
+    require_login: bool = True
 
 
 @dataclass
@@ -72,6 +76,10 @@ class AccountConfig:
     executable_path: str = ""
     # Optional: an laufenden Chrome per CDP anbinden (z.B. http://127.0.0.1:9222).
     cdp_url: str = ""
+    # Sprache der Kontoansicht. Wird im eigenen Browser als Locale und
+    # Accept-Language gesetzt, damit die Texte reproduzierbar sind.
+    # Im CDP-Modus nicht erzwingbar – dort gilt die Sprache deines Chrome.
+    locale: str = "de-DE"
     # Nur frei stornierbare Buchungen überwachen (Umbuchen sonst nicht möglich).
     only_if_free_cancellation: bool = True
 
@@ -118,6 +126,7 @@ class Config:
             delay_between_seconds=float(s.get("delay_between_seconds", 8.0)),
             executable_path=s.get("executable_path", "") or "",
             cdp_url=s.get("cdp_url", "") or "",
+            require_login=bool(s.get("require_login", True)),
         )
 
         bookings: list[Booking] = []
@@ -149,6 +158,7 @@ class Config:
             headless=bool(a.get("headless", True)),
             executable_path=a.get("executable_path", "") or "",
             cdp_url=a.get("cdp_url", "") or "",
+            locale=a.get("locale", "de-DE") or "de-DE",
             only_if_free_cancellation=bool(a.get("only_if_free_cancellation", True)),
         )
 

@@ -83,7 +83,8 @@ def cmd_account(args: argparse.Namespace) -> int:
 
     import yaml
 
-    from rebooking.account import fetch_account_bookings, inspect_capture, inspect_detail, login
+    from rebooking.account import (fetch_account_bookings, inspect_capture, inspect_detail,
+                                   login, session_status)
 
     config = Config.load(args.config)
     if getattr(args, "headed", False):
@@ -94,6 +95,19 @@ def cmd_account(args: argparse.Namespace) -> int:
     if args.action == "login":
         login(config.account)
         return 0
+
+    if args.action == "status":
+        st = session_status(config.account)
+        if st["error"]:
+            print(f"❌ Prüfung fehlgeschlagen: {st['error']}")
+            return 1
+        if st["logged_in"]:
+            wer = f" als {st['name']}" if st["name"] else ""
+            print(f"✅ Session aktiv{wer} ({st['url'][:70]})")
+            return 0
+        print("❌ NICHT eingeloggt – der Preis-Check bekäme nur Listenpreise statt")
+        print("   Mitgliederpreisen. Bitte neu anmelden:  python main.py account login")
+        return 1
 
     if args.action == "inspect":
         cap_dir = Path(config.data_dir) / "capture"
@@ -129,7 +143,13 @@ def cmd_account(args: argparse.Namespace) -> int:
     for b in found:
         price = b.get("paid_price")
         fc = _cancel_label[b.get("free_cancellation")]
-        print(f"• {b['name']}  {b['checkin']} → {b['checkout']}  "
+        zeitraum = (f"{b['checkin']} → {b['checkout']}" if b.get("checkin") and b.get("checkout")
+                    else "ZEITRAUM UNBEKANNT")
+        if b.get("free_until"):
+            fc += f" bis {b['free_until']}"
+        if b.get("past"):
+            fc += " · vergangen"
+        print(f"• {b['name']}  {zeitraum}  "
               f"{'Preis '+str(price)+' '+b.get('currency','') if price else '(Preis unbekannt)'}  [{fc}]")
 
     only_free = getattr(config.account, "only_if_free_cancellation", True)
@@ -150,7 +170,18 @@ def cmd_account(args: argparse.Namespace) -> int:
     have = {(e.get("name"), str(e.get("checkin")), str(e.get("checkout"))) for e in existing}
 
     added = skipped = 0
+    incomplete: list[str] = []
+    vergangen: list[str] = []
     for b in found:
+        # Vergangene Aufenthalte sind nicht mehr umbuchbar.
+        if b.get("past"):
+            vergangen.append(b["name"])
+            continue
+        # Ohne Zeitraum ist die Buchung nicht überwachbar – lieber auslassen und
+        # melden, als mit geratenem Datum den falschen Preis zu vergleichen.
+        if not (b.get("checkin") and b.get("checkout")):
+            incomplete.append(b["name"])
+            continue
         # Nur frei stornierbare Buchungen überwachen (nicht-erstattbare überspringen).
         if only_free and b.get("free_cancellation") is False:
             skipped += 1
@@ -176,12 +207,21 @@ def cmd_account(args: argparse.Namespace) -> int:
             "free_cancellation": b.get("free_cancellation"),
             "notes": note,
         }
+        # Frist fürs kostenlose Stornieren: danach ist Umbuchen zwecklos.
+        if b.get("free_until"):
+            entry["free_until"] = b["free_until"]
         existing.append(entry)
         have.add(key)
         added += 1
 
     cfg_path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
     print(f"\n{added} Buchung(en) übernommen" + (f", {skipped} nicht-erstattbare übersprungen" if skipped else "") + ".")
+    if vergangen:
+        print(f"{len(vergangen)} vergangene Buchung(en) übersprungen: " + ", ".join(vergangen))
+    if incomplete:
+        print(f"⚠ {len(incomplete)} Buchung(en) ohne erkannten Zeitraum NICHT übernommen: "
+              + ", ".join(incomplete))
+        print("  Bitte in der Web-UI von Hand ergänzen oder mit '--capture' das Datumsformat prüfen.")
     if any(b.get("paid_price") in (None, 0) for b in found):
         print("Achtung: Bei einigen fehlt der Preis – bitte prüfen.")
     if any(not b.get("url") for b in found):
@@ -324,8 +364,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.set_defaults(func=cmd_list)
 
     p_acc = sub.add_parser("account", help="Buchungen aus dem Hotels.com-Konto importieren")
-    p_acc.add_argument("action", choices=["login", "import", "inspect"],
-                       help="login: Browser-Login | import: Buchungen einlesen | inspect: Mitschnitt-Struktur zeigen")
+    p_acc.add_argument("action", choices=["login", "import", "inspect", "status"],
+                       help="login: Browser-Login | import: Buchungen einlesen | "
+                            "status: Session prüfen | inspect: Mitschnitt-Struktur zeigen")
     p_acc.add_argument("--capture", action="store_true", help="Rohantworten zum Justieren speichern")
     p_acc.add_argument("--merge", action="store_true", help="gefundene Buchungen in config.yaml übernehmen")
     p_acc.add_argument("--headed", action="store_true", help="Import im sichtbaren Browser (robuster gegen Bot-Schutz)")
