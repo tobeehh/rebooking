@@ -346,6 +346,26 @@ Container Manager → **Projekt** → **Erstellen** → Pfad
 Architektur (amd64/arm64) automatisch. Der erste Bau dauert einige Minuten und
 braucht rund 5 GB Platz.
 
+**Belegte Ports.** Auf einer NAS ist 8000 häufig schon vergeben. Dann in der
+`.env` einen anderen **Host**-Port setzen – im Container bleibt es 8000:
+
+```
+WEB_PORT_HOST=8088
+NOVNC_PORT_HOST=6080
+```
+
+Belegung prüfen: `sudo netstat -tlnp | grep -E ':(8000|6080)'`
+
+Nach dem Start erreichbar:
+
+| Adresse | Zweck |
+|---|---|
+| `http://NAS-IP:8000/` | Web-UI: Übersicht, Verlauf, Buchungen verwalten |
+| `http://NAS-IP:6080/` | Browser für die Anmeldung, wenn die Session abläuft |
+
+Beide gehören ausschließlich ins LAN – über die Web-UI lassen sich Buchungen
+anlegen und löschen, über noVNC das Konto vollständig bedienen.
+
 **Schritt 4 – Anmelden und Buchungen holen**
 
 ```bash
