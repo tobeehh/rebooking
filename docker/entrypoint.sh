@@ -83,7 +83,16 @@ else
 fi
 
 websockify --web=/usr/share/novnc "$NOVNC_PORT" localhost:5900 >/dev/null 2>&1 &
-log "noVNC erreichbar auf Port $NOVNC_PORT  ->  http://<NAS-IP>:$NOVNC_PORT/vnc.html"
+log "noVNC erreichbar auf Port $NOVNC_PORT  ->  http://<NAS-IP>:$NOVNC_PORT/"
+
+# --- Web-UI ----------------------------------------------------------------
+# Übersicht, Preis-Verlauf und Einstellungen. Muss an 0.0.0.0 lauschen, sonst
+# ist sie außerhalb des Containers nicht erreichbar.
+if [ "${WEB_UI:-1}" = "1" ]; then
+  python /app/main.py --config "$CONFIG" web \
+    --host 0.0.0.0 --port "${WEB_PORT:-8000}" >"$DATA_DIR/webui.log" 2>&1 &
+  log "Web-UI erreichbar auf Port ${WEB_PORT:-8000}  ->  http://<NAS-IP>:${WEB_PORT:-8000}/"
+fi
 
 # --- Modus -----------------------------------------------------------------
 run_check() {

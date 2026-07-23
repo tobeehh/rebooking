@@ -28,6 +28,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
+# Ohne index.html zeigt der Aufruf von "/" nur die Dateiliste des noVNC-Ordners.
+# Die Startseite leitet deshalb direkt auf den Client weiter – autoconnect spart
+# einen Klick, resize=scale passt das Bild ans Browserfenster an.
+RUN printf '%s\n' \
+    '<!doctype html><html><head><meta charset="utf-8">' \
+    '<title>Rebooking – Browser-Anmeldung</title>' \
+    '<meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=true&amp;resize=scale">' \
+    '</head><body>Weiterleitung zu <a href="vnc.html?autoconnect=true&amp;resize=scale">vnc.html</a> …' \
+    '</body></html>' > /usr/share/novnc/index.html
+
 WORKDIR /app
 
 COPY requirements.txt ./
@@ -40,7 +50,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # /data hält Profil, Konfiguration und Preis-Historie – als Volume mounten.
 VOLUME ["/data"]
-EXPOSE 6080
+# 6080 = noVNC (Anmeldung), 8000 = Web-UI (Uebersicht/Verlauf/Einstellungen)
+EXPOSE 6080 8000
 
 # tini als PID 1: sonst bleiben Chromium-/Xvfb-Zombies zurück.
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
