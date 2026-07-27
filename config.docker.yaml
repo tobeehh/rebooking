@@ -22,8 +22,10 @@ notifications:
 
 account:
   profile_dir: /data/chrome_profile
-  trips_url: "https://www.hotels.com/trips"
-  login_url: "https://www.hotels.com/login"
+  # Deutsche Domain als Basis: ?locale=de_DE allein leitet nicht immer
+  # zuverlaessig um, und die englische Seite liefert teils USD.
+  trips_url: "https://de.hotels.com/trips"
+  login_url: "https://de.hotels.com/login"
   locale: de-DE
   # Der Container startet Chromium selbst mit diesem Debug-Port.
   cdp_url: "http://127.0.0.1:9222"

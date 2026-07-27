@@ -1,10 +1,16 @@
 name: Daily price check
 
+# ACHTUNG: Fuer den echten Preis-Check auf GitHub Actions UNGEEIGNET.
+# Es fehlt die eingeloggte Session -> Hotels.com liefert nur Listenpreise
+# statt Mitgliederpreisen (gemessen: 759 statt 391 EUR). Ausserdem
+# Datacenter-IP (Bot-Schutz) und kein persistentes Browser-Profil.
+# Der Dauerbetrieb laeuft ueber den Synology-Container (siehe README).
+#
+# Der taegliche Cron ist deshalb ABGESCHALTET - er schlug nur fehl und
+# verschickte Fehlermails. Nur noch manuell ausloesbar, z.B. um die reine
+# Browser-Mechanik im CI zu testen.
 on:
-  schedule:
-    # Täglich um 07:00 UTC (~09:00 Berlin). Zeit nach Bedarf anpassen.
-    - cron: "0 7 * * *"
-  workflow_dispatch: {}   # manuelles Auslösen im GitHub-UI
+  workflow_dispatch: {}   # nur manuell im GitHub-UI
 
 jobs:
   check:
